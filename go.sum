@@ -16,5 +16,13 @@ github.com/arodland/flexclient v0.0.0-20200326161548-d1ca6a76e645 h1:anClwPpTZFj
 github.com/arodland/flexclient v0.0.0-20200326161548-d1ca6a76e645/go.mod h1:TJsk9/vJ3IIo9h9CTe0qWH4wx/iY/Jr1bkEzfyEsoYo=
 github.com/arodland/flexclient v0.0.0-20200326161722-e53331342ce3 h1:oO1ytxliYpIA9R/mVhYxd1V0grqIp9Pg+MyJmBkhRZM=
 github.com/arodland/flexclient v0.0.0-20200326161722-e53331342ce3/go.mod h1:TJsk9/vJ3IIo9h9CTe0qWH4wx/iY/Jr1bkEzfyEsoYo=
+github.com/arodland/flexclient v0.0.0-20200326173658-1204deca036a h1:yj0VwPgGS4ZDPYYvkqG0CJhnO5Es2CVUUwb2qawjMyY=
+github.com/arodland/flexclient v0.0.0-20200326173658-1204deca036a/go.mod h1:TJsk9/vJ3IIo9h9CTe0qWH4wx/iY/Jr1bkEzfyEsoYo=
+github.com/arodland/flexclient v0.0.0-20200401030543-6874c74d5867 h1:KnI+T3eiYT34nbcPrBOZ5U8BERf7FalRlVpDtGi60gw=
+github.com/arodland/flexclient v0.0.0-20200401030543-6874c74d5867/go.mod h1:TJsk9/vJ3IIo9h9CTe0qWH4wx/iY/Jr1bkEzfyEsoYo=
+github.com/arodland/flexclient v0.0.0-20200401031442-48db7033d3d4 h1:9JD12VqHaZsImJispeRd9eXSUpUrQbO5oNWSM8gZUUg=
+github.com/arodland/flexclient v0.0.0-20200401031442-48db7033d3d4/go.mod h1:TJsk9/vJ3IIo9h9CTe0qWH4wx/iY/Jr1bkEzfyEsoYo=
+github.com/arodland/flexclient v0.0.0-20200401032639-07e418930243 h1:QGANYZt9Jh0L1EtyXD0IRT8a/FM9RJpnmvgUTQuNuco=
+github.com/arodland/flexclient v0.0.0-20200401032639-07e418930243/go.mod h1:TJsk9/vJ3IIo9h9CTe0qWH4wx/iY/Jr1bkEzfyEsoYo=
 github.com/krippendorf/flexlib-go v0.0.0-20190915173206-0615603c3e03 h1:Ms006cLD8bjmWhelibnwBZzKMg4rxmASRSf04ymxALc=
 github.com/krippendorf/flexlib-go v0.0.0-20190915173206-0615603c3e03/go.mod h1:2DEEUE+BgOsEbCz8RWpWbe3OyT6wn7xctzMyrxa6op8=
