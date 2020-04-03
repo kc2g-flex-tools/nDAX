@@ -44,15 +44,22 @@ var TXStreamID string
 func bindClient() {
 	fmt.Println("Waiting for station:", cfg.Station)
 
-	clients := make(chan flexclient.StateUpdate, 10)
+	clients := make(chan flexclient.StateUpdate)
 	sub := fc.Subscribe(flexclient.Subscription{"client ", clients})
-	fc.SendAndWait("sub client all")
+	cmdResult := fc.SendNotify("sub client all")
 
-	for upd := range clients {
-		if upd.CurrentState["station"] == cfg.Station {
-			ClientID = strings.TrimPrefix(upd.Object, "client ")
-			ClientUUID = upd.CurrentState["client_id"]
-			break
+	var found, cmdComplete bool
+
+	for !(found && cmdComplete) {
+		select {
+		case upd := <-clients:
+			if upd.CurrentState["station"] == cfg.Station {
+				ClientID = strings.TrimPrefix(upd.Object, "client ")
+				ClientUUID = upd.CurrentState["client_id"]
+				found = true
+			}
+		case <-cmdResult:
+			cmdComplete = true
 		}
 	}
 
@@ -65,24 +72,30 @@ func bindClient() {
 
 func findSlice() {
 	fmt.Println("Looking for slice:", cfg.Slice)
-	slices := make(chan flexclient.StateUpdate, 10)
+	slices := make(chan flexclient.StateUpdate)
 	sub := fc.Subscribe(flexclient.Subscription{"slice ", slices})
-	fc.SendAndWait("sub slice all")
+	cmdResult := fc.SendNotify("sub slice all")
 
-	for upd := range slices {
-		if upd.CurrentState["index_letter"] == cfg.Slice && upd.CurrentState["client_handle"] == ClientID {
-			SliceIdx = strings.TrimPrefix(upd.Object, "slice ")
-			break
+	var found, cmdComplete bool
+
+	for !(found && cmdComplete) {
+		select {
+		case upd := <-slices:
+			if upd.CurrentState["index_letter"] == cfg.Slice && upd.CurrentState["client_handle"] == ClientID {
+				SliceIdx = strings.TrimPrefix(upd.Object, "slice ")
+				found = true
+			}
+		case <-cmdResult:
+			cmdComplete = true
 		}
 	}
 
 	fc.Unsubscribe(sub)
 	fmt.Println("Found slice", SliceIdx)
-
 }
 
 func enableDax() {
-	fc.SendAndWait("slice set " + SliceIdx + "dax=" + cfg.DaxCh)
+	fc.SliceSet(SliceIdx, flexclient.Object{"dax": cfg.DaxCh})
 	fc.SendAndWait("dax audio set " + cfg.DaxCh + " slice=" + SliceIdx + " tx=1")
 
 	res := fc.SendAndWait("stream create type=dax_rx dax_channel=" + cfg.DaxCh)
