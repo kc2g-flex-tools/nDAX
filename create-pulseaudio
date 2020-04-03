@@ -1,0 +1,13 @@
+#!/bin/sh
+
+pacmd load-module module-null-sink sink_name=flexdax.rx
+pacmd 'update-sink-proplist flexdax.rx device.description="[INTERNAL] Flex RX loopback"'
+pacmd 'update-sink-proplist flexdax.rx device.icon_name=emblem-system'
+pacmd 'update-source-proplist flexdax.rx.monitor device.description="Flex RX"'
+pacmd 'update-source-proplist flexdax.rx.monitor device.icon_name=audio-card'
+
+pacmd load-module module-null-sink sink_name=flexdax.tx
+pacmd 'update-sink-proplist flexdax.tx device.description="Flex TX"'
+pacmd 'update-sink-proplist flexdax.tx device.icon_name=audio-input-microphone'
+pacmd 'update-source-proplist flexdax.tx.monitor device.description="[INTERNAL] Flex TX loopback"'
+pacmd 'update-source-proplist flexdax.tx.monitor device.icon_name=emblem-system'
