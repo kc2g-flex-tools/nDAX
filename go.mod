@@ -1,5 +1,5 @@
-module github.com/arodland/pulsedax
+module github.com/arodland/nDAX
 
 go 1.13
 
-require github.com/arodland/flexclient v0.0.0-20200403043514-24e7909de583
+require github.com/arodland/flexclient v0.0.0-20200403212027-3704d6d9e88e
