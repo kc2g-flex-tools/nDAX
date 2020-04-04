@@ -181,6 +181,15 @@ func streamToPulse() {
 	cmd.Wait()
 }
 
+func allZero(buf []byte) bool {
+	for _, b := range buf {
+		if b != 0 {
+			return false
+		}
+	}
+	return true
+}
+
 func streamFromPulse() {
 	tmp, err := strconv.ParseUint(TXStreamID, 16, 32)
 	if err != nil {
@@ -209,6 +218,11 @@ func streamFromPulse() {
 			fmt.Println(err)
 			break
 		}
+
+		if allZero(buf[:n]) {
+			continue
+		}
+
 		//		rescaled := rescale(buf[:n], 32767)
 
 		var pkt bytes.Buffer
