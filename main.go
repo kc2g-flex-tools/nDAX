@@ -7,13 +7,14 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/arodland/flexclient"
+	"github.com/jfreymuth/pulse"
 )
 
 var cfg struct {
@@ -35,6 +36,7 @@ func init() {
 }
 
 var fc *flexclient.FlexClient
+var pc *pulse.Client
 var ClientID string
 var ClientUUID string
 var SliceIdx string
@@ -118,11 +120,13 @@ func enableDax() {
 	fmt.Println("enabled TX DAX stream", TXStreamID)
 }
 
-func rescale(data []byte, scale float32) []byte {
-	b := bytes.NewReader(data)
-	var out bytes.Buffer
-
+func decodeFloat32(data []byte) []float32 {
 	var sample float32
+	out := make([]float32, len(data)/4)
+	i := 0
+
+	b := bytes.NewReader(data)
+
 	for {
 		err := binary.Read(b, binary.BigEndian, &sample)
 		if err == io.EOF {
@@ -130,55 +134,81 @@ func rescale(data []byte, scale float32) []byte {
 		} else if err != nil {
 			panic(err)
 		}
-
-		binary.Write(&out, binary.BigEndian, sample*scale)
+		out[i] = sample
+		i += 1
 	}
-
-	return out.Bytes()
+	return out
 }
 
-func rescaleToInt(data []byte, scale float32) []byte {
-	b := bytes.NewReader(data)
+func encodeFloat32(samples []float32) []byte {
 	var out bytes.Buffer
-
-	var sample float32
-	for {
-		err := binary.Read(b, binary.BigEndian, &sample)
-		if err == io.EOF {
-			break
-		} else if err != nil {
-			panic(err)
-		}
-
-		binary.Write(&out, binary.BigEndian, uint16(sample*scale))
+	for _, sample := range samples {
+		binary.Write(&out, binary.BigEndian, sample)
 	}
-
 	return out.Bytes()
 }
 
 func streamToPulse() {
-	cmd := exec.Command("pacat", "--device", cfg.Sink, "--rate=48000", "--channels=1", "--format=float32be", "--latency-msec=25", "/dev/stdin")
-	pipe, err := cmd.StdinPipe()
-	if err != nil {
-		panic(err)
-	}
-	cmd.Stderr = os.Stderr
-
-	err = cmd.Start()
+	sink, err := pc.SinkByID(cfg.Sink)
 	if err != nil {
 		panic(err)
 	}
 
-	vitaPackets := make(chan flexclient.VitaPacket, 3)
+	vitaPackets := make(chan flexclient.VitaPacket, 10)
 	fc.SetVitaChan(vitaPackets)
+
+	buf := make([]float32, 0, 4096)
+	var stream *pulse.PlaybackStream
+	var start time.Time
+	var sampIn, sampOut float64
+	var m sync.RWMutex
+
+	stream, err = pc.NewPlayback(
+		func(out []float32) int {
+			m.RLock()
+			defer m.RUnlock()
+
+			n := len(out)
+			if len(buf) < n {
+				n = len(buf)
+			}
+
+			copy(out, buf[:n])
+			copy(buf, buf[n:])
+			buf = buf[:len(buf)-n]
+			sampOut += float64(n)
+			elapsed := time.Now().Sub(start)
+			_ = elapsed
+			//			fmt.Printf("%.3f\t%.3f\t%d\t%d\t%d\n", sampIn/elapsed.Seconds(), sampOut/elapsed.Seconds(), len(out), n, len(buf))
+			return n
+		},
+		pulse.PlaybackSink(sink),
+		pulse.PlaybackMono,
+		pulse.PlaybackSampleRate(48000),
+		pulse.PlaybackLatency(0.1),
+	)
+
+	if err != nil {
+		panic(err)
+	}
+
+	start = time.Now()
 	for pkt := range vitaPackets {
 		if pkt.Preamble.Class_id.PacketClassCode == 0x03e3 {
-			pipe.Write(pkt.Payload)
+			m.Lock()
+			rawSamples := decodeFloat32(pkt.Payload)
+			buf = append(buf, rawSamples...)
+			sampIn += float64(len(rawSamples))
+			l := len(buf)
+			m.Unlock()
+			if l >= 4800 {
+				stream.Start()
+			}
 		}
 	}
 
-	pipe.Close()
-	cmd.Wait()
+	stream.Stop()
+	stream.Close()
 }
 
 func allZero(buf []byte) bool {
@@ -190,54 +220,63 @@ func allZero(buf []byte) bool {
 	return true
 }
 
-func streamFromPulse() {
+func streamFromPulse(wg *sync.WaitGroup) {
 	tmp, err := strconv.ParseUint(TXStreamID, 16, 32)
 	if err != nil {
 		panic(err)
 	}
 
 	StreamIDInt := uint32(tmp)
-
-	cmd := exec.Command("pacat", "-r", "--device", cfg.Source, "--rate=48000", "--channels=1", "--format=float32be", "--latency-msec=25", "/dev/stdout")
-	pipe, err := cmd.StdoutPipe()
-	if err != nil {
-		panic(err)
-	}
-	cmd.Stderr = os.Stderr
-
-	err = cmd.Start()
+	source, err := pc.SourceByID(cfg.Source)
 	if err != nil {
 		panic(err)
 	}
 
-	var buf [1024]byte
+	buf := make([]float32, 0, 4096)
 	var pktCount int16
-	for {
-		n, err := io.ReadFull(pipe, buf[:])
-		if err != nil {
-			fmt.Println(err)
-			break
-		}
 
-		if allZero(buf[:n]) {
-			continue
-		}
+	var stream *pulse.RecordStream
 
-		//		rescaled := rescale(buf[:n], 32767)
+	stream, err = pc.NewRecord(
+		func(in []float32) {
+			const n = 256
 
-		var pkt bytes.Buffer
-		pkt.WriteByte(0x18)
-		pkt.WriteByte(0xd0 | byte(pktCount&0xf))
-		pktCount += 1
-		binary.Write(&pkt, binary.BigEndian, uint16(n/4+7))
-		binary.Write(&pkt, binary.BigEndian, StreamIDInt)
-		binary.Write(&pkt, binary.BigEndian, uint64(0x00001c2d534c03e3))
-		binary.Write(&pkt, binary.BigEndian, uint32(0x00000000))
-		binary.Write(&pkt, binary.BigEndian, uint32(0x00000000))
-		binary.Write(&pkt, binary.BigEndian, uint32(0x00000000))
-		pkt.Write(buf[:n])
-		fc.SendUdp(pkt.Bytes())
+			buf = append(buf, in...)
+			for len(buf) >= n {
+				rawSamples := encodeFloat32(buf[:n])
+				copy(buf, buf[n:])
+				buf = buf[:len(buf)-n]
+				if allZero(rawSamples) {
+					continue
+				}
+
+				var pkt bytes.Buffer
+				pkt.WriteByte(0x18)
+				pkt.WriteByte(0xd0 | byte(pktCount&0xf))
+				pktCount += 1
+				binary.Write(&pkt, binary.BigEndian, uint16(n+7))
+				binary.Write(&pkt, binary.BigEndian, StreamIDInt)
+				binary.Write(&pkt, binary.BigEndian, uint64(0x00001c2d534c03e3))
+				binary.Write(&pkt, binary.BigEndian, uint32(0x00000000))
+				binary.Write(&pkt, binary.BigEndian, uint32(0x00000000))
+				binary.Write(&pkt, binary.BigEndian, uint32(0x00000000))
+				pkt.Write(rawSamples)
+				fc.SendUdp(pkt.Bytes())
+			}
+		},
+		pulse.RecordSource(source),
+		pulse.RecordMono,
+		pulse.RecordSampleRate(48000),
+		pulse.RecordLatency(0.150),
+	)
+
+	if err != nil {
+		panic(err)
 	}
+
+	stream.Start()
+	defer stream.Close()
+	wg.Wait()
 }
 
 func main() {
@@ -248,6 +287,17 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+
+	pc, err = pulse.NewClient(
+		pulse.ClientApplicationName("nDAX"),
+		pulse.ClientApplicationIconName("radio"),
+	)
+
+	if err != nil {
+		panic(err)
+	}
+
+	defer pc.Close()
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -271,7 +321,8 @@ func main() {
 	findSlice()
 	enableDax()
 	go streamToPulse()
-	go streamFromPulse()
+	time.Sleep(100 * time.Millisecond)
+	go streamFromPulse(&wg)
 
 	wg.Wait()
 }
