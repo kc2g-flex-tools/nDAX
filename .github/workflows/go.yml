@@ -36,3 +36,14 @@ jobs:
 
     - name: Build
       run: go build -v .
+
+    - name: Package an Artifact
+      run: |
+        mkdir artifact.out
+        cp nDAX artifact.out
+
+    - name: Upload
+      uses: actions/upload-artifact@v1
+      with:
+        name: nDAX
+        path: artifact.out
