@@ -19,6 +19,10 @@ jobs:
         go-version: 1.13
       id: go
 
+    - name: Install PulseAudio
+      run: |
+        apt-get update && apt-get install -y libpulse-dev
+
     - name: Check out code into the Go module directory
       uses: actions/checkout@v2
 
