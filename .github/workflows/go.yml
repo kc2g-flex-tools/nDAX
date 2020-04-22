@@ -43,6 +43,5 @@ jobs:
       with:
         files: |
           nDAX
-          create-pulseaudio
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

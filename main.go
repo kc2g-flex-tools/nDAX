@@ -35,7 +35,7 @@ func init() {
 	flag.StringVar(&cfg.Slice, "slice", "A", "Slice letter to use")
 	flag.StringVar(&cfg.DaxCh, "daxch", "1", "DAX channel # to use")
 	flag.StringVar(&cfg.Sink, "sink", "flexdax.rx", "PulseAudio sink to send audio to")
-	flag.StringVar(&cfg.Source, "source", "flexdax.tx.monitor", "PulseAudio sink to receive from")
+	flag.StringVar(&cfg.Source, "source", "flexdax.tx", "PulseAudio sink to receive from")
 	flag.Float64Var(&cfg.LatencyTarget, "latency", 100, "Target RX latency (ms, higher = less sample rate variation)")
 	flag.BoolVar(&cfg.DebugTiming, "debug-timing", false, "Print debug messages about buffer timing and resampling")
 }
@@ -149,7 +149,7 @@ func streamToPulse() {
 		&pulse.BufferAttr{
 			Tlength:   uint32(lTargetSamples * 4),
 			Maxlength: ^uint32(0),
-			Prebuf:    uint32(lTargetSamples) * 4,
+			Prebuf:    uint32(lTargetSamples * 4),
 			Minreq:    ^uint32(0),
 			Fragsize:  ^uint32(0),
 		},
@@ -226,7 +226,7 @@ func streamFromPulse(exit chan struct{}) {
 		"",
 		"nDAX",
 		pulse.STREAM_RECORD,
-		cfg.Source,
+		cfg.Source+".monitor",
 		"DAX TX "+cfg.Slice,
 		&pulse.SampleSpec{
 			Format:   pulse.SAMPLE_FLOAT32BE,
@@ -306,6 +306,18 @@ func main() {
 		panic(err)
 	}
 
+	sinkIdx, err := createLoopback(cfg.Sink, "[INTERNAL] Flex RX Loopback", "emblem-symbolic-link", "Flex RX", "radio")
+	if err != nil {
+		panic(err)
+	}
+	defer destroyLoopback(sinkIdx)
+
+	sourceIdx, err := createLoopback(cfg.Source, "Flex TX", "radio", "[INTERNAL] Flex TX Loopback", "emblem-symbolic-link")
+	if err != nil {
+		panic(err)
+	}
+	defer destroyLoopback(sourceIdx)
+
 	var wg sync.WaitGroup
 	wg.Add(1)
 	stopTx := make(chan struct{})
@@ -329,6 +341,7 @@ func main() {
 	bindClient()
 	findSlice()
 	enableDax()
+
 	go streamToPulse()
 	go streamFromPulse(stopTx)
 
