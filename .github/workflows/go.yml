@@ -41,6 +41,7 @@ jobs:
       run: |
         mkdir artifact.out
         cp nDAX artifact.out
+        cp create-pulseaudio artifact.out
 
     - name: Upload
       uses: actions/upload-artifact@v1
