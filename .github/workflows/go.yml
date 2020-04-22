@@ -37,14 +37,12 @@ jobs:
     - name: Build
       run: go build -v .
 
-    - name: Package an Artifact
-      run: |
-        mkdir artifact.out
-        cp nDAX artifact.out
-        cp create-pulseaudio artifact.out
-
-    - name: Upload
-      uses: actions/upload-artifact@v1
+    - name: Release
+      uses: softprops/action-gh-release@v1
+      if: startsWith(github.ref, 'refs/tags/')
       with:
-        name: nDAX
-        path: artifact.out
+        files: |
+          nDAX
+          create-pulseaudio
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
