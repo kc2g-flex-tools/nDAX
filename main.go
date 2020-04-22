@@ -5,24 +5,28 @@ import (
 	"encoding/binary"
 	"flag"
 	"fmt"
-	"io"
+	"log"
 	"os"
-	"os/exec"
 	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/arodland/flexclient"
+	"github.com/mesilliac/pulse-simple"
+	"github.com/smallnest/ringbuffer"
 )
 
 var cfg struct {
-	RadioIP string
-	Station string
-	Slice   string
-	Sink    string
-	Source  string
-	DaxCh   string
+	RadioIP       string
+	Station       string
+	Slice         string
+	Sink          string
+	Source        string
+	DaxCh         string
+	LatencyTarget float64
+	DebugTiming   bool
 }
 
 func init() {
@@ -32,6 +36,8 @@ func init() {
 	flag.StringVar(&cfg.DaxCh, "daxch", "1", "DAX channel # to use")
 	flag.StringVar(&cfg.Sink, "sink", "flexdax.rx", "PulseAudio sink to send audio to")
 	flag.StringVar(&cfg.Source, "source", "flexdax.tx.monitor", "PulseAudio sink to receive from")
+	flag.Float64Var(&cfg.LatencyTarget, "latency", 100, "Target RX latency (ms, higher = less sample rate variation)")
+	flag.BoolVar(&cfg.DebugTiming, "debug-timing", false, "Print debug messages about buffer timing and resampling")
 }
 
 var fc *flexclient.FlexClient
@@ -42,7 +48,7 @@ var RXStreamID string
 var TXStreamID string
 
 func bindClient() {
-	fmt.Println("Waiting for station:", cfg.Station)
+	log.Println("Waiting for station:", cfg.Station)
 
 	clients := make(chan flexclient.StateUpdate)
 	sub := fc.Subscribe(flexclient.Subscription{"client ", clients})
@@ -65,13 +71,13 @@ func bindClient() {
 
 	fc.Unsubscribe(sub)
 
-	fmt.Println("Found client ID", ClientID, "UUID", ClientUUID)
+	log.Println("Found client ID", ClientID, "UUID", ClientUUID)
 
 	fc.SendAndWait("client bind client_id=" + ClientUUID)
 }
 
 func findSlice() {
-	fmt.Println("Looking for slice:", cfg.Slice)
+	log.Println("Looking for slice:", cfg.Slice)
 	slices := make(chan flexclient.StateUpdate)
 	sub := fc.Subscribe(flexclient.Subscription{"slice ", slices})
 	cmdResult := fc.SendNotify("sub slice all")
@@ -91,7 +97,7 @@ func findSlice() {
 	}
 
 	fc.Unsubscribe(sub)
-	fmt.Println("Found slice", SliceIdx)
+	log.Println("Found slice", SliceIdx)
 }
 
 func enableDax() {
@@ -104,7 +110,7 @@ func enableDax() {
 	}
 
 	RXStreamID = res.Message
-	fmt.Println("enabled RX DAX stream", RXStreamID)
+	log.Println("enabled RX DAX stream", RXStreamID)
 
 	fc.SendAndWait(fmt.Sprintf("audio stream 0x%s slice %s gain %d", RXStreamID, SliceIdx, 50))
 
@@ -115,70 +121,86 @@ func enableDax() {
 
 	TXStreamID = res.Message
 
-	fmt.Println("enabled TX DAX stream", TXStreamID)
-}
-
-func rescale(data []byte, scale float32) []byte {
-	b := bytes.NewReader(data)
-	var out bytes.Buffer
-
-	var sample float32
-	for {
-		err := binary.Read(b, binary.BigEndian, &sample)
-		if err == io.EOF {
-			break
-		} else if err != nil {
-			panic(err)
-		}
-
-		binary.Write(&out, binary.BigEndian, sample*scale)
-	}
-
-	return out.Bytes()
-}
-
-func rescaleToInt(data []byte, scale float32) []byte {
-	b := bytes.NewReader(data)
-	var out bytes.Buffer
-
-	var sample float32
-	for {
-		err := binary.Read(b, binary.BigEndian, &sample)
-		if err == io.EOF {
-			break
-		} else if err != nil {
-			panic(err)
-		}
-
-		binary.Write(&out, binary.BigEndian, uint16(sample*scale))
-	}
-
-	return out.Bytes()
+	log.Println("enabled TX DAX stream", TXStreamID)
 }
 
 func streamToPulse() {
-	cmd := exec.Command("pacat", "--device", cfg.Sink, "--rate=48000", "--channels=1", "--format=float32be", "--latency-msec=25", "/dev/stdin")
-	pipe, err := cmd.StdinPipe()
-	if err != nil {
-		panic(err)
-	}
-	cmd.Stderr = os.Stderr
-
-	err = cmd.Start()
+	tmp, err := strconv.ParseUint(RXStreamID, 16, 32)
 	if err != nil {
 		panic(err)
 	}
 
-	vitaPackets := make(chan flexclient.VitaPacket, 3)
+	StreamIDInt := uint32(tmp)
+
+	lTargetSamples := 2 * 48000 * (cfg.LatencyTarget / 1000)
+
+	stream, err := pulse.NewStream(
+		"",
+		"nDAX",
+		pulse.STREAM_PLAYBACK,
+		cfg.Sink,
+		"DAX RX "+cfg.Slice,
+		&pulse.SampleSpec{
+			Format:   pulse.SAMPLE_FLOAT32BE,
+			Rate:     48000,
+			Channels: 1,
+		},
+		nil,
+		&pulse.BufferAttr{
+			Tlength:   uint32(lTargetSamples * 4),
+			Maxlength: ^uint32(0),
+			Prebuf:    uint32(lTargetSamples) * 4,
+			Minreq:    ^uint32(0),
+			Fragsize:  ^uint32(0),
+		},
+	)
+
+	if err != nil {
+		panic(err)
+	}
+
+	defer stream.Free()
+
+	vitaPackets := make(chan flexclient.VitaPacket, 20)
 	fc.SetVitaChan(vitaPackets)
+
+	r := NewResampler(cfg.LatencyTarget * 1000)
+	lastPktNum := -1
+	i := 0
+
 	for pkt := range vitaPackets {
-		if pkt.Preamble.Class_id.PacketClassCode == 0x03e3 {
-			pipe.Write(pkt.Payload)
+		if pkt.Preamble.Class_id.PacketClassCode == 0x03e3 && pkt.Preamble.Stream_id == StreamIDInt {
+			lat, _ := stream.Latency()
+			lat += 5333 * uint64(len(vitaPackets))
+
+			pktNum := int(pkt.Preamble.Header.Packet_count)
+			if lastPktNum != -1 {
+				diff := (16 + pktNum - lastPktNum) % 16
+				if diff != 1 {
+					log.Println("discontinuity:", diff)
+				}
+			}
+			lastPktNum = pktNum
+
+			bytes := r.ResamplePacket(pkt.Payload, lat)
+
+			wrote, err := stream.Write(bytes)
+			if err != nil {
+				log.Println("pulse write error:", err.Error())
+			}
+			if wrote < len(bytes) {
+				log.Println("Short write to pulse, wanted ", len(bytes), "got", wrote)
+			}
+
+			i = (i + 1) % 375
+			if cfg.DebugTiming && (i == 0 || i == 187) { /* once a second */
+				msg := r.Stats(lat)
+				log.Println(msg)
+			}
 		}
 	}
 
-	pipe.Close()
-	cmd.Wait()
+	stream.Drain()
 }
 
 func allZero(buf []byte) bool {
@@ -190,7 +212,7 @@ func allZero(buf []byte) bool {
 	return true
 }
 
-func streamFromPulse() {
+func streamFromPulse(exit chan struct{}) {
 	tmp, err := strconv.ParseUint(TXStreamID, 16, 32)
 	if err != nil {
 		panic(err)
@@ -198,45 +220,76 @@ func streamFromPulse() {
 
 	StreamIDInt := uint32(tmp)
 
-	cmd := exec.Command("pacat", "-r", "--device", cfg.Source, "--rate=48000", "--channels=1", "--format=float32be", "--latency-msec=25", "/dev/stdout")
-	pipe, err := cmd.StdoutPipe()
+	buf := ringbuffer.New(20 * 256 * 4)
+
+	stream, err := pulse.NewStream(
+		"",
+		"nDAX",
+		pulse.STREAM_RECORD,
+		cfg.Source,
+		"DAX TX "+cfg.Slice,
+		&pulse.SampleSpec{
+			Format:   pulse.SAMPLE_FLOAT32BE,
+			Rate:     48000,
+			Channels: 1,
+		},
+		nil,
+		&pulse.BufferAttr{
+			Maxlength: 20 * 256 * 4, // 20 packets, about 100ms
+			Tlength:   ^uint32(0),
+			Prebuf:    ^uint32(0),
+			Minreq:    ^uint32(0),
+			Fragsize:  256 * 4, // req 1 packet at a time exactly, we hope :)
+		},
+	)
+
 	if err != nil {
 		panic(err)
 	}
-	cmd.Stderr = os.Stderr
 
-	err = cmd.Start()
-	if err != nil {
-		panic(err)
-	}
+	defer stream.Free()
 
-	var buf [1024]byte
 	var pktCount int16
+
+READ:
 	for {
-		n, err := io.ReadFull(pipe, buf[:])
+		select {
+		case <-exit:
+			break READ
+		default:
+		}
+		const pktSize = 256 * 4
+		var readBuf [pktSize]byte
+		n, err := stream.Read(readBuf[:])
 		if err != nil {
-			fmt.Println(err)
+			log.Println(err)
 			break
 		}
+		buf.Write(readBuf[:n])
 
-		if allZero(buf[:n]) {
-			continue
+		for buf.Length() >= pktSize {
+			var rawSamples [pktSize]byte
+			buf.Read(rawSamples[:])
+
+			if allZero(rawSamples[:]) {
+				pktCount += 1
+				continue
+			}
+
+			var pkt bytes.Buffer
+			pkt.WriteByte(0x18)
+			pkt.WriteByte(0xd0 | byte(pktCount&0xf))
+			pktCount += 1
+			binary.Write(&pkt, binary.BigEndian, uint16(n/4+7))
+			binary.Write(&pkt, binary.BigEndian, StreamIDInt)
+			binary.Write(&pkt, binary.BigEndian, uint64(0x00001c2d534c03e3))
+			binary.Write(&pkt, binary.BigEndian, uint32(0x00000000))
+			binary.Write(&pkt, binary.BigEndian, uint32(0x00000000))
+			binary.Write(&pkt, binary.BigEndian, uint32(0x00000000))
+			pkt.Write(rawSamples[:])
+			fc.SendUdp(pkt.Bytes())
+			time.Sleep(1 * time.Millisecond)
 		}
-
-		//		rescaled := rescale(buf[:n], 32767)
-
-		var pkt bytes.Buffer
-		pkt.WriteByte(0x18)
-		pkt.WriteByte(0xd0 | byte(pktCount&0xf))
-		pktCount += 1
-		binary.Write(&pkt, binary.BigEndian, uint16(n/4+7))
-		binary.Write(&pkt, binary.BigEndian, StreamIDInt)
-		binary.Write(&pkt, binary.BigEndian, uint64(0x00001c2d534c03e3))
-		binary.Write(&pkt, binary.BigEndian, uint32(0x00000000))
-		binary.Write(&pkt, binary.BigEndian, uint32(0x00000000))
-		binary.Write(&pkt, binary.BigEndian, uint32(0x00000000))
-		pkt.Write(buf[:n])
-		fc.SendUdp(pkt.Bytes())
 	}
 }
 
@@ -249,11 +302,17 @@ func main() {
 		panic(err)
 	}
 
+	if err != nil {
+		panic(err)
+	}
+
 	var wg sync.WaitGroup
 	wg.Add(1)
+	stopTx := make(chan struct{})
 
 	go func() {
 		fc.Run()
+		close(stopTx)
 		wg.Done()
 	}()
 
@@ -261,7 +320,7 @@ func main() {
 		c := make(chan os.Signal, 1)
 		signal.Notify(c, os.Interrupt)
 		_ = <-c
-		fmt.Println("Exit on SIGINT")
+		log.Println("Exit on SIGINT")
 		fc.Close()
 	}()
 
@@ -271,7 +330,7 @@ func main() {
 	findSlice()
 	enableDax()
 	go streamToPulse()
-	go streamFromPulse()
+	go streamFromPulse(stopTx)
 
 	wg.Wait()
 }
