@@ -1,9 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
-	"math"
 )
 
 type Resampler struct {
@@ -16,7 +16,7 @@ type Resampler struct {
 	padded        int
 	minLatency    uint64
 	maxLatency    uint64
-	lastSample    [4]byte
+	lastSample    float32
 }
 
 // TODO: parametrize this on sample rate and packet size, so the control loop isn't powered by magic numbers.
@@ -27,16 +27,11 @@ func NewResampler(target float64) *Resampler {
 	}
 }
 
-func interpolateSample(prev, next []byte) []byte {
-	prevFloat := math.Float32frombits(binary.BigEndian.Uint32(prev))
-	nextFloat := math.Float32frombits(binary.BigEndian.Uint32(next))
-	interpolated := (prevFloat + nextFloat) / 2
-	var out [4]byte
-	binary.BigEndian.PutUint32(out[:], math.Float32bits(interpolated))
-	return out[:]
+func interpolateSample(prev, next float32) float32 {
+	return (prev + next) / 2
 }
 
-func (r *Resampler) ResamplePacket(in []byte, latency uint64) []byte {
+func (r *Resampler) ResamplePacket(in []byte, latency uint64) []float32 {
 	if latency < r.minLatency {
 		r.minLatency = latency
 	}
@@ -44,24 +39,25 @@ func (r *Resampler) ResamplePacket(in []byte, latency uint64) []byte {
 		r.maxLatency = latency
 	}
 
-	out := make([]byte, len(in))
-	copy(out, in)
+	out := make([]float32, len(in)/4)
+	b := bytes.NewReader(in)
+	binary.Read(b, binary.BigEndian, out)
 
 	r.accum += float64(latency) - r.latencyTarget
 
 	if r.accum > 12*r.latencyTarget { // Drop one sample
-		out = out[4:]
+		out = out[1:]
 		r.dropped += 1
 		r.accum -= 10 * r.latencyTarget
 	} else if r.accum < -12*r.latencyTarget { // Interpolate one sample
-		samp := interpolateSample(r.lastSample[:], out[:4])
-		out = append(samp, out...)
+		samp := interpolateSample(r.lastSample, out[0])
+		out = append([]float32{samp}, out...)
 		r.padded += 1
 		r.accum += 10 * r.latencyTarget
 	}
 
 	r.accum *= 0.9999 // Let the integrator leak
-	copy(r.lastSample[:], out[len(out)-4:])
+	r.lastSample = out[len(out)-1]
 
 	return out
 }

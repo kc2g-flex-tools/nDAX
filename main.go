@@ -11,10 +11,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/arodland/flexclient"
-	"github.com/mesilliac/pulse-simple"
+	"github.com/jfreymuth/pulse"
+	"github.com/jfreymuth/pulse/proto"
 	"github.com/smallnest/ringbuffer"
 )
 
@@ -41,6 +43,7 @@ func init() {
 }
 
 var fc *flexclient.FlexClient
+var pc *pulse.Client
 var ClientID string
 var ClientUUID string
 var SliceIdx string
@@ -132,70 +135,111 @@ func streamToPulse() {
 
 	StreamIDInt := uint32(tmp)
 
-	lTargetSamples := 2 * 48000 * (cfg.LatencyTarget / 1000)
+	sink, err := pc.SinkByID(cfg.Sink)
+	if err != nil {
+		panic(err)
+	}
 
-	stream, err := pulse.NewStream(
-		"",
-		"nDAX",
-		pulse.STREAM_PLAYBACK,
-		cfg.Sink,
-		"DAX RX "+cfg.Slice,
-		&pulse.SampleSpec{
-			Format:   pulse.SAMPLE_FLOAT32BE,
-			Rate:     48000,
-			Channels: 1,
-		},
-		nil,
-		&pulse.BufferAttr{
-			Tlength:   uint32(lTargetSamples * 4),
-			Maxlength: ^uint32(0),
-			Prebuf:    uint32(lTargetSamples * 4),
-			Minreq:    ^uint32(0),
-			Fragsize:  ^uint32(0),
-		},
+	var latency = uint64(cfg.LatencyTarget * 1000)
+
+	r := NewResampler(cfg.LatencyTarget * 1000)
+	lastPktNum := -1
+	i := 0
+
+	buf := ringbuffer.New(int(cfg.LatencyTarget * 48000 * 4 / 1000))
+
+	var stream *pulse.PlaybackStream
+
+	stream, err = pc.NewPlayback(
+		pulse.Float32Reader(func(out []float32) (int, error) {
+			for buf.Length() < 1024 {
+				time.Sleep(time.Millisecond)
+			}
+
+			availToRead := buf.Length() / 4
+			availToWrite := len(out)
+
+			written := 0
+
+			for availToRead >= 256 && availToWrite >= 257 {
+				var bytes [1024]byte
+				read, _ := buf.Read(bytes[:])
+				availToRead -= read / 4
+
+				lat := atomic.LoadUint64(&latency)
+				samples := r.ResamplePacket(bytes[:], lat)
+				copy(out[written:written+len(samples)], samples)
+				written += len(samples)
+				availToWrite -= len(samples)
+
+				i = (i + 1) % 375
+				if cfg.DebugTiming && (i == 0 || i == 187) { /* once a second */
+					msg := r.Stats(lat)
+					log.Println(msg)
+				}
+			}
+
+			return written, nil
+		}),
+		pulse.PlaybackSink(sink),
+		pulse.PlaybackSampleRate(48000),
+		pulse.PlaybackMono,
+		pulse.PlaybackLatency(cfg.LatencyTarget/1000),
+		pulse.PlaybackMediaName("DAX RX "+cfg.Slice),
+		pulse.PlaybackMediaIconName("radio"),
+		pulse.PlaybackRawOption(func(c *proto.CreatePlaybackStream) {
+			c.BufferMaxLength = c.BufferTargetLength * 4
+			c.BufferPrebufferLength = c.BufferTargetLength
+		}),
 	)
 
 	if err != nil {
 		panic(err)
 	}
 
-	defer stream.Free()
-
-	vitaPackets := make(chan flexclient.VitaPacket, 20)
+	vitaPackets := make(chan flexclient.VitaPacket, int(cfg.LatencyTarget/5.333)+10)
 	fc.SetVitaChan(vitaPackets)
 
-	r := NewResampler(cfg.LatencyTarget * 1000)
-	lastPktNum := -1
-	i := 0
+	var started bool
 
-	for pkt := range vitaPackets {
-		if pkt.Preamble.Class_id.PacketClassCode == 0x03e3 && pkt.Preamble.Stream_id == StreamIDInt {
-			lat, _ := stream.Latency()
-			lat += 5333 * uint64(len(vitaPackets))
+	updateLatency := time.NewTicker(100 * time.Millisecond)
 
-			pktNum := int(pkt.Preamble.Header.Packet_count)
-			if lastPktNum != -1 {
-				diff := (16 + pktNum - lastPktNum) % 16
-				if diff != 1 {
-					log.Println("discontinuity:", diff)
+LOOP:
+	for {
+		select {
+		case <-updateLatency.C:
+			var lat uint64
+			if started {
+				latRequest := proto.GetPlaybackLatency{
+					StreamIndex: stream.StreamIndex(),
+					Time:        proto.Time{0, 0},
 				}
+				var latReply proto.GetPlaybackLatencyReply
+				pc.RawRequest(&latRequest, &latReply)
+				lat = uint64(latReply.Latency)
 			}
-			lastPktNum = pktNum
+			lat += uint64(1e6 * float64(buf.Length()/(48000*4)))
+			atomic.StoreUint64(&latency, lat)
 
-			bytes := r.ResamplePacket(pkt.Payload, lat)
-
-			wrote, err := stream.Write(bytes)
-			if err != nil {
-				log.Println("pulse write error:", err.Error())
+			if !started && lat >= uint64(cfg.LatencyTarget*1000) {
+				stream.Start()
+				started = true
 			}
-			if wrote < len(bytes) {
-				log.Println("Short write to pulse, wanted ", len(bytes), "got", wrote)
+		case pkt, ok := <-vitaPackets:
+			if !ok {
+				log.Println("exit")
+				break LOOP
 			}
-
-			i = (i + 1) % 375
-			if cfg.DebugTiming && (i == 0 || i == 187) { /* once a second */
-				msg := r.Stats(lat)
-				log.Println(msg)
+			if pkt.Preamble.Class_id.PacketClassCode == 0x03e3 && pkt.Preamble.Stream_id == StreamIDInt {
+				pktNum := int(pkt.Preamble.Header.Packet_count)
+				if lastPktNum != -1 {
+					diff := (16 + pktNum - lastPktNum) % 16
+					if diff != 1 {
+						log.Println("discontinuity:", diff)
+					}
+				}
+				lastPktNum = pktNum
+				buf.Write(pkt.Payload)
 			}
 		}
 	}
@@ -222,75 +266,64 @@ func streamFromPulse(exit chan struct{}) {
 
 	buf := ringbuffer.New(20 * 256 * 4)
 
-	stream, err := pulse.NewStream(
-		"",
-		"nDAX",
-		pulse.STREAM_RECORD,
-		cfg.Source+".monitor",
-		"DAX TX "+cfg.Slice,
-		&pulse.SampleSpec{
-			Format:   pulse.SAMPLE_FLOAT32BE,
-			Rate:     48000,
-			Channels: 1,
-		},
-		nil,
-		&pulse.BufferAttr{
-			Maxlength: 20 * 256 * 4, // 20 packets, about 100ms
-			Tlength:   ^uint32(0),
-			Prebuf:    ^uint32(0),
-			Minreq:    ^uint32(0),
-			Fragsize:  256 * 4, // req 1 packet at a time exactly, we hope :)
-		},
+	source, err := pc.SourceByID(cfg.Source + ".monitor")
+	if err != nil {
+		panic(err)
+	}
+
+	var pktCount uint16
+
+	var stream *pulse.RecordStream
+	stream, err = pc.NewRecord(
+		pulse.Float32Writer(func(in []float32) (int, error) {
+			const pktSize = 256 * 4
+			binary.Write(buf, binary.BigEndian, in)
+
+			for buf.Length() >= pktSize {
+				var rawSamples [pktSize]byte
+				buf.Read(rawSamples[:])
+
+				if allZero(rawSamples[:]) {
+					pktCount += 1
+					continue
+				}
+
+				var pkt bytes.Buffer
+				pkt.WriteByte(0x18)
+				pkt.WriteByte(0xd0 | byte(pktCount&0xf))
+				pktCount += 1
+				binary.Write(&pkt, binary.BigEndian, uint16(pktSize/4+7))
+				binary.Write(&pkt, binary.BigEndian, StreamIDInt)
+				binary.Write(&pkt, binary.BigEndian, uint64(0x00001c2d534c03e3))
+				binary.Write(&pkt, binary.BigEndian, uint32(0x00000000))
+				binary.Write(&pkt, binary.BigEndian, uint32(0x00000000))
+				binary.Write(&pkt, binary.BigEndian, uint32(0x00000000))
+				pkt.Write(rawSamples[:])
+				fc.SendUdp(pkt.Bytes())
+				time.Sleep(1 * time.Millisecond)
+			}
+
+			return len(in), nil
+		}),
+		pulse.RecordSource(source),
+		pulse.RecordSampleRate(48000),
+		pulse.RecordMono,
+		pulse.RecordLatency(0.1),
+		pulse.RecordMediaName("DAX TX "+cfg.Slice),
+		pulse.RecordMediaIconName("audio-input-microphone"),
+		pulse.RecordRawOption(func(c *proto.CreateRecordStream) {
+			c.BufferFragSize = 256 * 4 // req 1 packet at a time exactly, we hope
+		}),
 	)
 
 	if err != nil {
 		panic(err)
 	}
 
-	defer stream.Free()
+	stream.Start()
+	defer stream.Close()
 
-	var pktCount int16
-
-READ:
-	for {
-		select {
-		case <-exit:
-			break READ
-		default:
-		}
-		const pktSize = 256 * 4
-		var readBuf [pktSize]byte
-		n, err := stream.Read(readBuf[:])
-		if err != nil {
-			log.Println(err)
-			break
-		}
-		buf.Write(readBuf[:n])
-
-		for buf.Length() >= pktSize {
-			var rawSamples [pktSize]byte
-			buf.Read(rawSamples[:])
-
-			if allZero(rawSamples[:]) {
-				pktCount += 1
-				continue
-			}
-
-			var pkt bytes.Buffer
-			pkt.WriteByte(0x18)
-			pkt.WriteByte(0xd0 | byte(pktCount&0xf))
-			pktCount += 1
-			binary.Write(&pkt, binary.BigEndian, uint16(n/4+7))
-			binary.Write(&pkt, binary.BigEndian, StreamIDInt)
-			binary.Write(&pkt, binary.BigEndian, uint64(0x00001c2d534c03e3))
-			binary.Write(&pkt, binary.BigEndian, uint32(0x00000000))
-			binary.Write(&pkt, binary.BigEndian, uint32(0x00000000))
-			binary.Write(&pkt, binary.BigEndian, uint32(0x00000000))
-			pkt.Write(rawSamples[:])
-			fc.SendUdp(pkt.Bytes())
-			time.Sleep(1 * time.Millisecond)
-		}
-	}
+	<-exit
 }
 
 func main() {
@@ -301,6 +334,10 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+
+	pc, err = pulse.NewClient(
+		pulse.ClientApplicationName("nDAX"),
+	)
 
 	if err != nil {
 		panic(err)

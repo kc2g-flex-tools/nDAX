@@ -5,22 +5,8 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/jfreymuth/pulse"
 	"github.com/jfreymuth/pulse/proto"
 )
-
-var pc *pulse.Client
-
-func init() {
-	var err error
-	pc, err = pulse.NewClient(
-		pulse.ClientApplicationName("nDAX"),
-	)
-
-	if err != nil {
-		panic(err)
-	}
-}
 
 func runCmd(name string, arg ...string) error {
 	cmd := exec.Command(name, arg...)
@@ -53,7 +39,7 @@ func createLoopback(sinkName, desc, icon, monitorDesc, monitorIcon string) (uint
 	err = pc.RawRequest(
 		&proto.LoadModule{
 			Name: "module-null-sink",
-            Args: propList("sink_name", sinkName, "rate", "48000", "format", "float32be"),
+			Args: propList("sink_name", sinkName, "rate", "48000", "format", "float32be"),
 		},
 		&resp,
 	)
@@ -62,8 +48,8 @@ func createLoopback(sinkName, desc, icon, monitorDesc, monitorIcon string) (uint
 		return 0, err
 	}
 
-    // Yes, there's really no other way to do this; these two commands
-    // are *not* part of the native protocol.
+	// Yes, there's really no other way to do this; these two commands
+	// are *not* part of the native protocol.
 	runCmd("pacmd", "update-sink-proplist "+sinkName+" "+propList(
 		"device.description", desc,
 		"device.icon_name", icon,
