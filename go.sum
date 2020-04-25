@@ -1,5 +1,5 @@
-github.com/arodland/flexclient v0.0.0-20200425151003-78b44e23d8f3 h1:pSMFAmzzwqY4G0LqclsdAeixzIaRvxCAN3eB5v3B3iE=
-github.com/arodland/flexclient v0.0.0-20200425151003-78b44e23d8f3/go.mod h1:TJsk9/vJ3IIo9h9CTe0qWH4wx/iY/Jr1bkEzfyEsoYo=
+github.com/arodland/flexclient v0.0.0-20200425170618-c0a9a1b746c8 h1:xmTkAH/gQe7o9/8cOG0q9yNkEl+BURIsPvyjuoPTegA=
+github.com/arodland/flexclient v0.0.0-20200425170618-c0a9a1b746c8/go.mod h1:Dr1IsVCe2rU/bgzYHQf2FJPnbn7aU1ewl6kqQzXw6/w=
 github.com/jfreymuth/pulse v0.0.0-20200420102712-d41213b11c0d h1:0W8f58Tz6V6iKc7j4+KTrodWCN8SbX6ZXghsn0OvvAA=
 github.com/jfreymuth/pulse v0.0.0-20200420102712-d41213b11c0d/go.mod h1:cpYspI6YljhkUf1WLXLLDmeaaPFc3CnGLjDZf9dZ4no=
 github.com/krippendorf/flexlib-go v0.0.0-20190915173206-0615603c3e03 h1:Ms006cLD8bjmWhelibnwBZzKMg4rxmASRSf04ymxALc=
@@ -8,3 +8,5 @@ github.com/mesilliac/pulse-simple v0.0.0-20170506101341-75ac54e19fdf h1:Zkc2mThK
 github.com/mesilliac/pulse-simple v0.0.0-20170506101341-75ac54e19fdf/go.mod h1:w/UDU7AYzhUNZpb9TmWkrEFVu1+yA8jn++5871x9hWc=
 github.com/smallnest/ringbuffer v0.0.0-20200331140504-3a38e8060b89 h1:rcF/MlDD6u1pN2u9uwCFw9Y5aYS4t/u8/Mhfiub9D2w=
 github.com/smallnest/ringbuffer v0.0.0-20200331140504-3a38e8060b89/go.mod h1:wIpUJ8WEUx959cAgIwpDuHUcE7aexxxYNcvXUT08L90=
+golang.org/x/sys v0.0.0-20200420163511-1957bb5e6d1f h1:gWF768j/LaZugp8dyS4UwsslYCYz9XgFxvlgsn0n9H8=
+golang.org/x/sys v0.0.0-20200420163511-1957bb5e6d1f/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=
