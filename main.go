@@ -30,7 +30,7 @@ var cfg struct {
 }
 
 func init() {
-	flag.StringVar(&cfg.RadioIP, "radio", "192.168.1.67", "radio IP address")
+	flag.StringVar(&cfg.RadioIP, "radio", ":discover:", "radio IP address or discovery spec")
 	flag.StringVar(&cfg.Station, "station", "Flex", "station name to bind to")
 	flag.StringVar(&cfg.Slice, "slice", "A", "Slice letter to use")
 	flag.StringVar(&cfg.DaxCh, "daxch", "1", "DAX channel # to use")
