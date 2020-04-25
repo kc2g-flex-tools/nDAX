@@ -3,7 +3,6 @@ name: Build and Release
 on:
   push:
     branches: [ master ]
-    tags: [ '*' ]
   pull_request:
     branches: [ master ]
   release:
@@ -47,11 +46,10 @@ jobs:
     - name: Build
       run: go build -v .
 
-    - name: Release
-      uses: softprops/action-gh-release@v1
-      if: startsWith(github.ref, 'refs/tags/') && matrix.release
+    - name: Upload to Release
+      uses: JasonEtco/upload-to-release@master
+      if: github.event.release.id && matrix.release
       with:
-        files: |
-          nDAX
+        args: nDAX application/octet-stream
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
