@@ -17,6 +17,8 @@ type Resampler struct {
 	minLatency    uint64
 	maxLatency    uint64
 	lastSample    float32
+	holdoff       int
+	Fast          bool
 }
 
 // TODO: parametrize this on sample rate and packet size, so the control loop isn't powered by magic numbers.
@@ -45,15 +47,19 @@ func (r *Resampler) ResamplePacket(in []byte, latency uint64) []float32 {
 
 	r.accum += float64(latency) - r.latencyTarget
 
-	if r.accum > 12*r.latencyTarget { // Drop one sample
+	if r.holdoff > 0 {
+		r.holdoff -= 1
+	} else if r.accum > 12*r.latencyTarget { // Drop one sample
 		out = out[1:]
 		r.dropped += 1
 		r.accum -= 10 * r.latencyTarget
+		r.holdoff = 10
 	} else if r.accum < -12*r.latencyTarget { // Interpolate one sample
 		samp := interpolateSample(r.lastSample, out[0])
 		out = append([]float32{samp}, out...)
 		r.padded += 1
 		r.accum += 10 * r.latencyTarget
+		r.holdoff = 10
 	}
 
 	r.accum *= 0.9999 // Let the integrator leak

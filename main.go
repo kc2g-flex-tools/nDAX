@@ -146,25 +146,21 @@ func streamToPulse() {
 	lastPktNum := -1
 	i := 0
 
-	buf := ringbuffer.New(int(cfg.LatencyTarget * 48000 * 4 / 1000))
+	buf := ringbuffer.New(int(cfg.LatencyTarget * 48))
 
 	var stream *pulse.PlaybackStream
 
 	stream, err = pc.NewPlayback(
 		pulse.Float32Reader(func(out []float32) (int, error) {
-			for buf.Length() < 1024 {
-				time.Sleep(time.Millisecond)
-			}
-
-			availToRead := buf.Length() / 4
 			availToWrite := len(out)
-
 			written := 0
+			for availToWrite >= 257 && written <= 514 {
+				for buf.Length() < 1024 {
+					time.Sleep(5 * time.Millisecond)
+				}
 
-			for availToRead >= 256 && availToWrite >= 257 {
 				var bytes [1024]byte
-				read, _ := buf.Read(bytes[:])
-				availToRead -= read / 4
+				buf.Read(bytes[:])
 
 				lat := atomic.LoadUint64(&latency)
 				samples := r.ResamplePacket(bytes[:], lat)
@@ -190,6 +186,8 @@ func streamToPulse() {
 		pulse.PlaybackRawOption(func(c *proto.CreatePlaybackStream) {
 			c.BufferMaxLength = c.BufferTargetLength * 4
 			c.BufferPrebufferLength = c.BufferTargetLength
+			c.AdjustLatency = true
+			c.BufferMinimumRequest = 1024
 		}),
 	)
 
@@ -197,38 +195,22 @@ func streamToPulse() {
 		panic(err)
 	}
 
-	vitaPackets := make(chan flexclient.VitaPacket, int(cfg.LatencyTarget/5.333)+10)
+	vitaPackets := make(chan flexclient.VitaPacket, 10)
 	fc.SetVitaChan(vitaPackets)
 
-	var started bool
-
 	updateLatency := time.NewTicker(100 * time.Millisecond)
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
 
-LOOP:
-	for {
-		select {
-		case <-updateLatency.C:
-			var lat uint64
-			if started {
-				latRequest := proto.GetPlaybackLatency{
-					StreamIndex: stream.StreamIndex(),
-					Time:        proto.Time{0, 0},
-				}
-				var latReply proto.GetPlaybackLatencyReply
-				pc.RawRequest(&latRequest, &latReply)
-				lat = uint64(latReply.Latency)
-			}
-			lat += uint64(1e6 * float64(buf.Length()/(48000*4)))
-			atomic.StoreUint64(&latency, lat)
-
-			if !started && lat >= uint64(cfg.LatencyTarget*1000) {
-				stream.Start()
-				started = true
-			}
-		case pkt, ok := <-vitaPackets:
+	go func() {
+		defer wg.Done()
+		for {
+			pkt, ok := <-vitaPackets
 			if !ok {
 				log.Println("exit")
-				break LOOP
+				done <- struct{}{}
+				return
 			}
 			if pkt.Preamble.Class_id.PacketClassCode == 0x03e3 && pkt.Preamble.Stream_id == StreamIDInt {
 				pktNum := int(pkt.Preamble.Header.Packet_count)
@@ -242,8 +224,32 @@ LOOP:
 				buf.Write(pkt.Payload)
 			}
 		}
-	}
+	}()
 
+	go func() {
+		for {
+			select {
+			case <-updateLatency.C:
+				latRequest := proto.GetPlaybackLatency{
+					StreamIndex: stream.StreamIndex(),
+					Time:        proto.Time{0, 0},
+				}
+				var latReply proto.GetPlaybackLatencyReply
+				pc.RawRequest(&latRequest, &latReply)
+				deviceLat := uint64(latReply.Latency)
+				pulseBufferSamples := (uint64(latReply.WriteIndex) - uint64(latReply.ReadIndex)) / 4
+				ourBufferSamples := uint64(buf.Length()/4) + uint64(len(vitaPackets)*256)
+				//				log.Println(deviceLat, pulseBufferSamples, ourBufferSamples)
+				lat := deviceLat + uint64(1e6*float64(pulseBufferSamples+ourBufferSamples)/48000)
+				atomic.StoreUint64(&latency, lat)
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	stream.Start()
+	wg.Wait()
 	stream.Drain()
 }
 
