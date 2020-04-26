@@ -22,9 +22,9 @@ type Resampler struct {
 }
 
 // TODO: parametrize this on sample rate and packet size, so the control loop isn't powered by magic numbers.
-func NewResampler(target float64) *Resampler {
+func NewResampler(target uint64) *Resampler {
 	return &Resampler{
-		latencyTarget: target,
+		latencyTarget: float64(target),
 		minLatency:    ^uint64(0),
 	}
 }
@@ -80,7 +80,7 @@ func (r *Resampler) Stats(latency uint64) string {
 	msg := fmt.Sprintf("%7d %7d %11.1f +%-3d -%-3d", r.minLatency, r.maxLatency, r.accum, r.padded, r.dropped)
 	if r.wrapped {
 		rate := float64(diff) / float64(len(r.latHist))
-		msg += fmt.Sprintf(" %6.3f %11.5f", rate, (1+rate/1e6)*48000)
+		msg += fmt.Sprintf(" %8.3f %11.5f", rate, (1+rate/1e6)*48000)
 	}
 
 	// Reset stats for next time
