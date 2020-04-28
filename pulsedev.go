@@ -1,19 +1,10 @@
 package main
 
 import (
-	"os"
-	"os/exec"
 	"strings"
 
 	"github.com/jfreymuth/pulse/proto"
 )
-
-func runCmd(name string, arg ...string) error {
-	cmd := exec.Command(name, arg...)
-	cmd.Stderr = os.Stderr
-	err := cmd.Run()
-	return err
-}
 
 var quoter = strings.NewReplacer(`\`, `\\`, `"`, `\"`)
 
@@ -50,12 +41,12 @@ func createLoopback(sinkName, desc, icon, monitorDesc, monitorIcon string) (uint
 
 	// Yes, there's really no other way to do this; these two commands
 	// are *not* part of the native protocol.
-	runCmd("pacmd", "update-sink-proplist "+sinkName+" "+propList(
+	pcli.Send("update-sink-proplist " + sinkName + " " + propList(
 		"device.description", desc,
 		"device.icon_name", icon,
 	))
 
-	runCmd("pacmd", "update-source-proplist "+sinkName+".monitor "+propList(
+	pcli.Send("update-source-proplist " + sinkName + ".monitor " + propList(
 		"device.description", monitorDesc,
 		"device.icon_name", monitorIcon,
 	))

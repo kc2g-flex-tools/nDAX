@@ -44,6 +44,7 @@ func init() {
 
 var fc *flexclient.FlexClient
 var pc *pulse.Client
+var pcli *PulseCLI
 var ClientID string
 var ClientUUID string
 var SliceIdx string
@@ -407,6 +408,12 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+
+	pcli, err = NewPulseCLI()
+	if err != nil {
+		panic(err)
+	}
+	defer pcli.Close()
 
 	sinkIdx, err := createLoopback(cfg.Sink, "[INTERNAL] Flex RX Loopback", "emblem-symbolic-link", "Flex RX", "radio")
 	if err != nil {
