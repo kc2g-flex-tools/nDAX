@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"math"
@@ -8,6 +9,7 @@ import (
 
 type Resampler struct {
 	latencyTarget float64
+	tolerance     float64
 	latHist       [60]uint64
 	histIndex     int
 	wrapped       bool
@@ -16,27 +18,25 @@ type Resampler struct {
 	padded        int
 	minLatency    uint64
 	maxLatency    uint64
-	lastSample    [4]byte
+	lastSample    float32
+	holdoff       int
+	Fast          bool
 }
 
 // TODO: parametrize this on sample rate and packet size, so the control loop isn't powered by magic numbers.
-func NewResampler(target float64) *Resampler {
+func NewResampler(target, tolerance uint64) *Resampler {
 	return &Resampler{
-		latencyTarget: target,
+		latencyTarget: float64(target),
+		tolerance:     float64(tolerance),
 		minLatency:    ^uint64(0),
 	}
 }
 
-func interpolateSample(prev, next []byte) []byte {
-	prevFloat := math.Float32frombits(binary.BigEndian.Uint32(prev))
-	nextFloat := math.Float32frombits(binary.BigEndian.Uint32(next))
-	interpolated := (prevFloat + nextFloat) / 2
-	var out [4]byte
-	binary.BigEndian.PutUint32(out[:], math.Float32bits(interpolated))
-	return out[:]
+func interpolateSample(prev, next float32) float32 {
+	return (prev + next) / 2
 }
 
-func (r *Resampler) ResamplePacket(in []byte, latency uint64) []byte {
+func (r *Resampler) ResamplePacket(in []byte, latency uint64) []float32 {
 	if latency < r.minLatency {
 		r.minLatency = latency
 	}
@@ -44,24 +44,32 @@ func (r *Resampler) ResamplePacket(in []byte, latency uint64) []byte {
 		r.maxLatency = latency
 	}
 
-	out := make([]byte, len(in))
-	copy(out, in)
+	out := make([]float32, len(in)/4)
+	b := bytes.NewReader(in)
+	binary.Read(b, binary.BigEndian, out)
 
-	r.accum += float64(latency) - r.latencyTarget
+	err := float64(latency) - r.latencyTarget
+	err *= math.Abs(err / (r.tolerance + math.Abs(err)))
 
-	if r.accum > 12*r.latencyTarget { // Drop one sample
-		out = out[4:]
+	r.accum += err
+
+	if r.holdoff > 0 {
+		r.holdoff -= 1
+	} else if r.accum > 12*r.latencyTarget { // Drop one sample
+		out = out[1:]
 		r.dropped += 1
-		r.accum -= 10 * r.latencyTarget
+		r.accum -= 11 * r.latencyTarget
+		r.holdoff = 10
 	} else if r.accum < -12*r.latencyTarget { // Interpolate one sample
-		samp := interpolateSample(r.lastSample[:], out[:4])
-		out = append(samp, out...)
+		samp := interpolateSample(r.lastSample, out[0])
+		out = append([]float32{samp}, out...)
 		r.padded += 1
-		r.accum += 10 * r.latencyTarget
+		r.accum += 11 * r.latencyTarget
+		r.holdoff = 10
 	}
 
 	r.accum *= 0.9999 // Let the integrator leak
-	copy(r.lastSample[:], out[len(out)-4:])
+	r.lastSample = out[len(out)-1]
 
 	return out
 }
@@ -78,7 +86,7 @@ func (r *Resampler) Stats(latency uint64) string {
 	msg := fmt.Sprintf("%7d %7d %11.1f +%-3d -%-3d", r.minLatency, r.maxLatency, r.accum, r.padded, r.dropped)
 	if r.wrapped {
 		rate := float64(diff) / float64(len(r.latHist))
-		msg += fmt.Sprintf(" %6.3f %11.5f", rate, (1+rate/1e6)*48000)
+		msg += fmt.Sprintf(" %8.3f %11.5f", rate, (1+rate/1e6)*48000)
 	}
 
 	// Reset stats for next time
