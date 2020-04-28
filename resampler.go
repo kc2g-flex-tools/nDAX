@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"math"
 )
 
 type Resampler struct {
 	latencyTarget float64
+	tolerance     float64
 	latHist       [60]uint64
 	histIndex     int
 	wrapped       bool
@@ -22,9 +24,10 @@ type Resampler struct {
 }
 
 // TODO: parametrize this on sample rate and packet size, so the control loop isn't powered by magic numbers.
-func NewResampler(target uint64) *Resampler {
+func NewResampler(target, tolerance uint64) *Resampler {
 	return &Resampler{
 		latencyTarget: float64(target),
+		tolerance:     float64(tolerance),
 		minLatency:    ^uint64(0),
 	}
 }
@@ -45,20 +48,23 @@ func (r *Resampler) ResamplePacket(in []byte, latency uint64) []float32 {
 	b := bytes.NewReader(in)
 	binary.Read(b, binary.BigEndian, out)
 
-	r.accum += float64(latency) - r.latencyTarget
+	err := float64(latency) - r.latencyTarget
+	err *= math.Abs(err / (r.tolerance + math.Abs(err)))
+
+	r.accum += err
 
 	if r.holdoff > 0 {
 		r.holdoff -= 1
 	} else if r.accum > 12*r.latencyTarget { // Drop one sample
 		out = out[1:]
 		r.dropped += 1
-		r.accum -= 10 * r.latencyTarget
+		r.accum -= 11 * r.latencyTarget
 		r.holdoff = 10
 	} else if r.accum < -12*r.latencyTarget { // Interpolate one sample
 		samp := interpolateSample(r.lastSample, out[0])
 		out = append([]float32{samp}, out...)
 		r.padded += 1
-		r.accum += 10 * r.latencyTarget
+		r.accum += 11 * r.latencyTarget
 		r.holdoff = 10
 	}
 

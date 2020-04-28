@@ -143,16 +143,18 @@ func streamToPulse() {
 	lTargetMicros := uint64(cfg.LatencyTarget * 1000)
 	var latency = lTargetMicros
 
-	r := NewResampler(lTargetMicros)
+	r := NewResampler(lTargetMicros, 10000)
 	lastPktNum := -1
 	i := 0
 
-	vitaPackets := make(chan flexclient.VitaPacket, int(0.5*cfg.LatencyTarget*48/256+1))
+	vitaPackets := make(chan flexclient.VitaPacket, int(cfg.LatencyTarget*48/256+1))
 	var buf []float32
 	var bufLock sync.RWMutex
 	done := make(chan struct{})
 	started := false
 	startedChan := make(chan struct{})
+	updateLatency := make(chan struct{}, 1)
+	var drop int64
 
 	var stream *pulse.PlaybackStream
 
@@ -161,6 +163,19 @@ func streamToPulse() {
 			if !started {
 				started = true
 				startedChan <- struct{}{}
+
+				// This is a hack... for reasons I can't quite explain, we almost always end up with more in the buffer
+				// than we wanted to, just a moment after startup. Wait long enough for everything to settle, and then
+				// do a jam sync, because it's preferable than having a wonky rate for several minutes to drag it
+				// into sync.
+				time.AfterFunc(5*time.Second, func() {
+					lat := atomic.LoadUint64(&latency)
+					excessSamples := int64((lat - lTargetMicros) * 48000 / 1e6)
+					fmt.Println("excessSamples:", excessSamples)
+					if excessSamples > 0 {
+						atomic.StoreInt64(&drop, excessSamples)
+					}
+				})
 			}
 			availToWrite := len(out)
 			written := 0
@@ -184,18 +199,6 @@ func streamToPulse() {
 
 			// Then, if there's still space, read and decode more packets, and fill the buffer.
 			for availToWrite > 0 {
-				// A hack. I don't know why the buffer gets over-full on startup
-				// with all that's going on... probably has something to do with the
-				// round-trip time to pulseaudio or something. In any case, be
-				// willing to drop entire packets if we're far ahead (but not if
-				// behind... if we have lots of un-decoded packets that pulse really
-				// *wants* then let's decode them ASAP.
-				lat := atomic.LoadUint64(&latency)
-				for len(vitaPackets) > cap(vitaPackets)/3 && lat > lTargetMicros {
-					<-vitaPackets
-					lat -= 5333
-				}
-
 				pkt, ok := <-vitaPackets
 				if !ok {
 					done <- struct{}{}
@@ -216,6 +219,18 @@ func streamToPulse() {
 					samples := r.ResamplePacket(pkt.Payload, lat)
 
 					n := len(samples)
+
+					d := atomic.LoadInt64(&drop)
+					if d > 0 {
+						if int(d) > n {
+							d = int64(n)
+						}
+						n -= int(d)
+						samples = samples[:n]
+						atomic.AddInt64(&drop, -d)
+						fmt.Println("drop", d)
+					}
+
 					if n > availToWrite {
 						n = availToWrite
 					}
@@ -237,6 +252,10 @@ func streamToPulse() {
 						log.Println(msg, len(vitaPackets), "/", cap(vitaPackets))
 					}
 				}
+			}
+
+			if i%15 == 0 {
+				updateLatency <- struct{}{}
 			}
 
 			return written, nil
@@ -263,11 +282,9 @@ func streamToPulse() {
 	}
 
 	go func() {
-		updateLatency := time.NewTicker(100 * time.Millisecond)
-
 		for {
 			select {
-			case <-updateLatency.C:
+			case <-updateLatency:
 				latRequest := proto.GetPlaybackLatency{
 					StreamIndex: stream.StreamIndex(),
 					Time:        proto.Time{0, 0},
@@ -280,7 +297,7 @@ func streamToPulse() {
 				ourBufferSamples := uint64(len(vitaPackets)*256 + len(buf))
 				bufLock.RUnlock()
 				//				log.Println(deviceLat, pulseBufferSamples, ourBufferSamples)
-				lat := deviceLat + uint64(1e6*float64(pulseBufferSamples+ourBufferSamples)/48000)
+				lat := deviceLat + uint64((pulseBufferSamples+ourBufferSamples)*1e6/48000)
 				atomic.StoreUint64(&latency, lat)
 			case <-done:
 				return
