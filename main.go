@@ -409,6 +409,11 @@ func main() {
 		panic(err)
 	}
 
+	err = ensureCLI()
+	if err != nil {
+		panic(err)
+	}
+
 	pcli, err = NewPulseCLI()
 	if err != nil {
 		panic(err)

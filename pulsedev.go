@@ -64,3 +64,39 @@ func destroyLoopback(index uint32) error {
 
 	return err
 }
+
+func getModules() ([]*proto.GetModuleInfoReply, error) {
+	var ret proto.GetModuleInfoListReply
+	err := pc.RawRequest(
+		&proto.GetModuleInfoList{},
+		&ret,
+	)
+	if err != nil {
+		return nil, err
+	} else {
+		return []*proto.GetModuleInfoReply(ret), nil
+	}
+}
+
+func ensureCLI() error {
+	modules, err := getModules()
+	if err != nil {
+		return err
+	}
+
+	for _, module := range modules {
+		if module.ModuleName == "module-cli-protocol-unix" {
+			return nil // already loaded
+		}
+	}
+
+	err = pc.RawRequest(
+		&proto.LoadModule{
+			Name: "module-cli-protocol-unix",
+			Args: "",
+		},
+		nil,
+	)
+
+	return err
+}
