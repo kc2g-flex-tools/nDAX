@@ -65,11 +65,15 @@ To run multiple nDAX instances, see the scripts directory.
 
 ### Audio Levels
 
-To modify nDAX audio levels, use rigctl after connecting up nCAT. The `.30` value should be between 0 and 1, and the port needs to correspond to your port number from nCAT:
+The best way to adjust nDAX receive audio levels is with the Flex's "AGC-T" control. If you are running nCAT, you can
+adjust this using `rigctl`. The `.30` value should be between 0 and 1, and the port needs to correspond to your port number from nCAT:
 
 ```
 $ rigctl -m 2 -r localhost:4532 L RF .30
 ```
+
+You can also adjust receive and transmit audio levels on a per-slice basis using a mixer app like `pavucontrol` or the KDE or GNOME mixers.
+
 ### Using with WSJT-X
 
 To setup WSJT-X with nCAT and hamlib, use the following settings:
