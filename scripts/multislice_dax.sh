@@ -1,6 +1,7 @@
 #!/bin/bash
 
-# Change to give a specific client name to this application
+# This should be the station name of your nCAT instance, or an existing
+# Maestro/SmartSDR/etc. instance.
 FLEX_STATION=flex_station_name
 
 ./nDAX -station ${FLEX_STATION} -slice A -daxch 1 -sink flex.sliceA.rx -source flex.sliceA.tx &
