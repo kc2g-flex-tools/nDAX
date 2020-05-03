@@ -14,9 +14,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/arodland/flexclient"
 	"github.com/jfreymuth/pulse"
 	"github.com/jfreymuth/pulse/proto"
+	"github.com/kc2g-flex-tools/flexclient"
 	"github.com/smallnest/ringbuffer"
 )
 

@@ -1,7 +1,7 @@
-github.com/arodland/flexclient v0.0.0-20200425170618-c0a9a1b746c8 h1:xmTkAH/gQe7o9/8cOG0q9yNkEl+BURIsPvyjuoPTegA=
-github.com/arodland/flexclient v0.0.0-20200425170618-c0a9a1b746c8/go.mod h1:Dr1IsVCe2rU/bgzYHQf2FJPnbn7aU1ewl6kqQzXw6/w=
 github.com/jfreymuth/pulse v0.0.0-20200424182717-3b0820ad352f h1:XyMNiJ5vCUTlgl4R/pfw11rzt1sbdzNLbZCk/bb3LfU=
 github.com/jfreymuth/pulse v0.0.0-20200424182717-3b0820ad352f/go.mod h1:cpYspI6YljhkUf1WLXLLDmeaaPFc3CnGLjDZf9dZ4no=
+github.com/kc2g-flex-tools/flexclient v0.0.0-20200503210605-5ef5b83e8f87 h1:LXxrJzhLVNsHrMUxSLbR5kptFTE8wsvfIbGMim9UZw0=
+github.com/kc2g-flex-tools/flexclient v0.0.0-20200503210605-5ef5b83e8f87/go.mod h1:xNkx45ZycxDy8K0IdJokHYP6ynECczBqSeemrm+xsyk=
 github.com/krippendorf/flexlib-go v0.0.0-20190915173206-0615603c3e03 h1:Ms006cLD8bjmWhelibnwBZzKMg4rxmASRSf04ymxALc=
 github.com/krippendorf/flexlib-go v0.0.0-20190915173206-0615603c3e03/go.mod h1:2DEEUE+BgOsEbCz8RWpWbe3OyT6wn7xctzMyrxa6op8=
 github.com/smallnest/ringbuffer v0.0.0-20200331140504-3a38e8060b89 h1:rcF/MlDD6u1pN2u9uwCFw9Y5aYS4t/u8/Mhfiub9D2w=

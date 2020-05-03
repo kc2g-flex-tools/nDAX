@@ -1,9 +1,9 @@
-module github.com/arodland/nDAX
+module github.com/kc2g-flex-tools/nDAX
 
 go 1.13
 
 require (
-	github.com/arodland/flexclient v0.0.0-20200425170618-c0a9a1b746c8
 	github.com/jfreymuth/pulse v0.0.0-20200424182717-3b0820ad352f
+	github.com/kc2g-flex-tools/flexclient v0.0.0-20200503210605-5ef5b83e8f87
 	github.com/smallnest/ringbuffer v0.0.0-20200331140504-3a38e8060b89
 )
