@@ -171,7 +171,7 @@ func streamToPulse() {
 				// into sync.
 				time.AfterFunc(5*time.Second, func() {
 					lat := atomic.LoadUint64(&latency)
-					excessSamples := int64((lat - lTargetMicros) * 48000 / 1e6)
+					excessSamples := ((int64(lat) - int64(lTargetMicros)) * 48000 / 1e6)
 					fmt.Println("excessSamples:", excessSamples)
 					if excessSamples > 0 {
 						atomic.StoreInt64(&drop, excessSamples)
