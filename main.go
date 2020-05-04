@@ -29,6 +29,7 @@ var cfg struct {
 	DaxCh         string
 	LatencyTarget float64
 	DebugTiming   bool
+	TX            bool
 }
 
 func init() {
@@ -40,6 +41,7 @@ func init() {
 	flag.StringVar(&cfg.Source, "source", "flexdax.tx", "PulseAudio sink to receive from")
 	flag.Float64Var(&cfg.LatencyTarget, "latency", 100, "Target RX latency (ms, higher = less sample rate variation)")
 	flag.BoolVar(&cfg.DebugTiming, "debug-timing", false, "Print debug messages about buffer timing and resampling")
+	flag.BoolVar(&cfg.TX, "tx", true, "Create a TX audio device")
 }
 
 var fc *flexclient.FlexClient
@@ -106,7 +108,13 @@ func findSlice() {
 
 func enableDax() {
 	fc.SliceSet(SliceIdx, flexclient.Object{"dax": cfg.DaxCh})
-	fc.SendAndWait("dax audio set " + cfg.DaxCh + " slice=" + SliceIdx + " tx=1")
+
+	cmd := "dax audio set " + cfg.DaxCh + " slice=" + SliceIdx
+	if cfg.TX {
+		cmd += " tx=1"
+	}
+
+	fc.SendAndWait(cmd)
 
 	res := fc.SendAndWait("stream create type=dax_rx dax_channel=" + cfg.DaxCh)
 	if res.Error != 0 {
@@ -118,14 +126,15 @@ func enableDax() {
 
 	fc.SendAndWait(fmt.Sprintf("audio stream 0x%s slice %s gain %d", RXStreamID, SliceIdx, 50))
 
-	res = fc.SendAndWait("stream create type=dax_tx" + cfg.DaxCh)
-	if res.Error != 0 {
-		panic(res)
+	if cfg.TX {
+		res = fc.SendAndWait("stream create type=dax_tx" + cfg.DaxCh)
+		if res.Error != 0 {
+			panic(res)
+		}
+
+		TXStreamID = res.Message
+		log.Println("enabled TX DAX stream", TXStreamID)
 	}
-
-	TXStreamID = res.Message
-
-	log.Println("enabled TX DAX stream", TXStreamID)
 }
 
 func streamToPulse() {
@@ -426,11 +435,13 @@ func main() {
 	}
 	defer destroyLoopback(sinkIdx)
 
-	sourceIdx, err := createLoopback(cfg.Source, "Flex TX", "radio", "[INTERNAL] Flex TX Loopback", "emblem-symbolic-link")
-	if err != nil {
-		panic(err)
+	if cfg.TX {
+		sourceIdx, err := createLoopback(cfg.Source, "Flex TX", "radio", "[INTERNAL] Flex TX Loopback", "emblem-symbolic-link")
+		if err != nil {
+			panic(err)
+		}
+		defer destroyLoopback(sourceIdx)
 	}
-	defer destroyLoopback(sourceIdx)
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -457,7 +468,10 @@ func main() {
 	enableDax()
 
 	go streamToPulse()
-	go streamFromPulse(stopTx)
+
+	if cfg.TX {
+		go streamFromPulse(stopTx)
+	}
 
 	wg.Wait()
 }
