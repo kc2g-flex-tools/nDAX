@@ -58,17 +58,17 @@ func (r *Resampler) ResamplePacket(in []byte, latency uint64) []float32 {
 	} else if r.accum > 12*r.latencyTarget { // Drop one sample
 		out = out[1:]
 		r.dropped += 1
-		r.accum -= 11 * r.latencyTarget
+		r.accum -= 6 * r.latencyTarget
 		r.holdoff = 10
 	} else if r.accum < -12*r.latencyTarget { // Interpolate one sample
 		samp := interpolateSample(r.lastSample, out[0])
 		out = append([]float32{samp}, out...)
 		r.padded += 1
-		r.accum += 11 * r.latencyTarget
+		r.accum += 6 * r.latencyTarget
 		r.holdoff = 10
 	}
 
-	r.accum *= 0.9999 // Let the integrator leak
+	r.accum *= 0.99999 // Let the integrator leak
 	r.lastSample = out[len(out)-1]
 
 	return out
