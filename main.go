@@ -30,6 +30,7 @@ var cfg struct {
 	LatencyTarget float64
 	DebugTiming   bool
 	TX            bool
+	Realtime      bool
 }
 
 func init() {
@@ -42,6 +43,7 @@ func init() {
 	flag.Float64Var(&cfg.LatencyTarget, "latency", 100, "Target RX latency (ms, higher = less sample rate variation)")
 	flag.BoolVar(&cfg.DebugTiming, "debug-timing", false, "Print debug messages about buffer timing and resampling")
 	flag.BoolVar(&cfg.TX, "tx", true, "Create a TX audio device")
+	flag.BoolVar(&cfg.Realtime, "rt", true, "Attempt to acquire realtime priority")
 }
 
 var fc *flexclient.FlexClient
@@ -171,6 +173,10 @@ func streamToPulse() {
 	stream, err = pc.NewPlayback(
 		pulse.Float32Reader(func(out []float32) (int, error) {
 			if !started {
+				if cfg.Realtime {
+					requestRealtime("rx thread", 19)
+				}
+
 				started = true
 				startedChan <- struct{}{}
 
@@ -347,10 +353,18 @@ func streamFromPulse(exit chan struct{}) {
 	}
 
 	var pktCount uint16
+	started := false
 
 	var stream *pulse.RecordStream
 	stream, err = pc.NewRecord(
 		pulse.Float32Writer(func(in []float32) (int, error) {
+			if !started {
+				if cfg.Realtime {
+					requestRealtime("tx thread", 19)
+				}
+				started = true
+			}
+
 			const pktSize = 256 * 4
 			binary.Write(buf, binary.BigEndian, in)
 
@@ -456,12 +470,22 @@ func main() {
 	go func() {
 		c := make(chan os.Signal, 1)
 		signal.Notify(c, os.Interrupt)
-		_ = <-c
+		<-c
 		log.Println("Exit on SIGINT")
 		fc.Close()
 	}()
 
-	fc.StartUDP()
+	err = fc.InitUDP()
+	if err != nil {
+		panic(err)
+	}
+
+	go func() {
+		if cfg.Realtime {
+			requestRealtime("udp thread", 20)
+		}
+		fc.RunUDP()
+	}()
 
 	bindClient()
 	findSlice()
