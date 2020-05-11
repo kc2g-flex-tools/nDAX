@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/jfreymuth/pulse/proto"
@@ -36,11 +37,9 @@ func createLoopback(sinkName, desc, icon, monitorDesc, monitorIcon string) (uint
 	)
 
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("load-module module-null-sink: %w", err)
 	}
 
-	// Yes, there's really no other way to do this; these two commands
-	// are *not* part of the native protocol.
 	pcli.Send("update-sink-proplist " + sinkName + " " + propList(
 		"device.description", desc,
 		"device.icon_name", icon,
@@ -81,7 +80,7 @@ func getModules() ([]*proto.GetModuleInfoReply, error) {
 func ensureCLI() error {
 	modules, err := getModules()
 	if err != nil {
-		return err
+		return fmt.Errorf("get pulse module list: %w", err)
 	}
 
 	for _, module := range modules {
@@ -98,5 +97,8 @@ func ensureCLI() error {
 		nil,
 	)
 
-	return err
+	if err != nil {
+		return fmt.Errorf("loadmodule module-cli-protocol-unix: %w", err)
+	}
+	return nil
 }

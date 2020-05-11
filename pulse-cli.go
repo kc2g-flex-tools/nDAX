@@ -14,7 +14,7 @@ func NewPulseCLI() (*PulseCLI, error) {
 	conn, err := net.Dial("unix", fmt.Sprint("/run/user/", os.Getuid(), "/pulse/cli"))
 
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("connect to pulse CLI socket: %w", err)
 	}
 
 	return &PulseCLI{

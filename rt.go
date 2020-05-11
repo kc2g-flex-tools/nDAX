@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"runtime"
 	"syscall"
@@ -11,6 +10,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/godbus/dbus"
+	"github.com/rs/zerolog/log"
 )
 
 const SCHED_OTHER = 0
@@ -26,7 +26,11 @@ func setRealtimeLimits() error {
 	rlimit.Cur = 1000   // 1ms
 	rlimit.Max = 100000 // 100ms
 
-	return syscall.Setrlimit(unix.RLIMIT_RTTIME, &rlimit)
+	err := syscall.Setrlimit(unix.RLIMIT_RTTIME, &rlimit)
+	if err != nil {
+		return fmt.Errorf("setrlimit RLIMIT_RTTIME: %w", err)
+	}
+	return nil
 }
 
 func sys_sched_setscheduler(policy, prio int32) error {
@@ -62,7 +66,7 @@ func requestRealtimeRTKit(tid int, prio int32) error {
 	// First, make sure dbus and rtkit actually exist.
 	dbusConn, err := dbus.SystemBus()
 	if err != nil {
-		return fmt.Errorf("requestRealtimeRTKit: DBus connect: %w", err)
+		return fmt.Errorf("DBus connect: %w", err)
 	}
 
 	rtkit := dbusConn.Object("org.freedesktop.RealtimeKit1", "/org/freedesktop/RealtimeKit1")
@@ -70,7 +74,7 @@ func requestRealtimeRTKit(tid int, prio int32) error {
 	prop, err := rtkit.GetProperty("org.freedesktop.RealtimeKit1.MaxRealtimePriority")
 
 	if err != nil {
-		return fmt.Errorf("requestRealtimeRTKit: query max prio: %w", err)
+		return fmt.Errorf("query max prio: %w", err)
 	}
 
 	maxPrio := prop.Value().(int32)
@@ -79,7 +83,7 @@ func requestRealtimeRTKit(tid int, prio int32) error {
 	err = sys_sched_setscheduler(SCHED_OTHER|SCHED_RESET_ON_FORK, 0)
 
 	if err != nil {
-		return fmt.Errorf("requestRealtimeRTKit: set SCHED_RESET_ON_FORK: %w", err)
+		return fmt.Errorf("set SCHED_RESET_ON_FORK: %w", err)
 	}
 
 	if prio > maxPrio {
@@ -88,7 +92,7 @@ func requestRealtimeRTKit(tid int, prio int32) error {
 
 	err = rtkit.Call("MakeThreadRealtime", 0, uint64(tid), uint32(prio)).Err
 	if err != nil {
-		return err
+		return fmt.Errorf("MakeThreadRealtime: %w", err)
 	}
 
 	return nil
@@ -121,8 +125,8 @@ out_error:
 func requestRealtime(name string, prio int32) {
 	err := attemptRealtime(prio)
 	if err == nil {
-		log.Printf("%s is now realtime", name)
+		log.Debug().Str("thread", name).Msg("Set thread to realtime")
 	} else {
-		log.Printf("%s couldn't get realtime: %s", name, err.Error())
+		log.Warn().Str("thread", name).Err(err).Msg("Couldn't get realtime")
 	}
 }

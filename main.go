@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"flag"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"strconv"
@@ -17,6 +16,8 @@ import (
 	"github.com/jfreymuth/pulse"
 	"github.com/jfreymuth/pulse/proto"
 	"github.com/kc2g-flex-tools/flexclient"
+	"github.com/rs/zerolog"
+	log "github.com/rs/zerolog/log"
 	"github.com/smallnest/ringbuffer"
 )
 
@@ -31,6 +32,7 @@ var cfg struct {
 	DebugTiming   bool
 	TX            bool
 	Realtime      bool
+	LogLevel      string
 }
 
 func init() {
@@ -44,6 +46,7 @@ func init() {
 	flag.BoolVar(&cfg.DebugTiming, "debug-timing", false, "Print debug messages about buffer timing and resampling")
 	flag.BoolVar(&cfg.TX, "tx", true, "Create a TX audio device")
 	flag.BoolVar(&cfg.Realtime, "rt", true, "Attempt to acquire realtime priority")
+	flag.StringVar(&cfg.LogLevel, "log-level", "info", "minimum level of messages to log to console (trace, debug, info, warn, error)")
 }
 
 var fc *flexclient.FlexClient
@@ -56,7 +59,7 @@ var RXStreamID string
 var TXStreamID string
 
 func bindClient() {
-	log.Println("Waiting for station:", cfg.Station)
+	log.Info().Str("station", cfg.Station).Msg("Waiting for station")
 
 	clients := make(chan flexclient.StateUpdate)
 	sub := fc.Subscribe(flexclient.Subscription{"client ", clients})
@@ -79,13 +82,13 @@ func bindClient() {
 
 	fc.Unsubscribe(sub)
 
-	log.Println("Found client ID", ClientID, "UUID", ClientUUID)
+	log.Info().Str("id", ClientID).Str("uuid", ClientUUID).Msg("Found Client")
 
 	fc.SendAndWait("client bind client_id=" + ClientUUID)
 }
 
 func findSlice() {
-	log.Println("Looking for slice:", cfg.Slice)
+	log.Info().Str("slice_id", cfg.Slice).Msg("Looking for slice")
 	slices := make(chan flexclient.StateUpdate)
 	sub := fc.Subscribe(flexclient.Subscription{"slice ", slices})
 	cmdResult := fc.SendNotify("sub slice all")
@@ -105,7 +108,7 @@ func findSlice() {
 	}
 
 	fc.Unsubscribe(sub)
-	log.Println("Found slice", SliceIdx)
+	log.Info().Str("slice_idx", SliceIdx).Msg("Found slice")
 }
 
 func enableDax() {
@@ -120,42 +123,42 @@ func enableDax() {
 
 	res := fc.SendAndWait("stream create type=dax_rx dax_channel=" + cfg.DaxCh)
 	if res.Error != 0 {
-		panic(res)
+		log.Fatal().Str("code", fmt.Sprintf("%08X", res.Error)).Str("message", res.Message).Msg("Create dax_rx stream failed")
 	}
 
 	RXStreamID = res.Message
-	log.Println("enabled RX DAX stream", RXStreamID)
+	log.Info().Str("stream_id", RXStreamID).Msg("Enabled RX DAX stream")
 
 	fc.SendAndWait(fmt.Sprintf("audio stream 0x%s slice %s gain %d", RXStreamID, SliceIdx, 50))
 
 	if cfg.TX {
 		res = fc.SendAndWait("stream create type=dax_tx" + cfg.DaxCh)
 		if res.Error != 0 {
-			panic(res)
+			log.Fatal().Str("code", fmt.Sprintf("%08X", res.Error)).Str("message", res.Message).Msg("Create dax_tx stream failed")
 		}
 
 		TXStreamID = res.Message
-		log.Println("enabled TX DAX stream", TXStreamID)
+		log.Info().Str("stream_id", TXStreamID).Msg("Enabled TX DAX stream")
 	}
 }
 
 func streamToPulse() {
 	tmp, err := strconv.ParseUint(RXStreamID, 16, 32)
 	if err != nil {
-		panic(err)
+		log.Fatal().Err(err).Msg("Parse RXStreamID failed")
 	}
 
 	StreamIDInt := uint32(tmp)
 
 	sink, err := pc.SinkByID(cfg.Sink)
 	if err != nil {
-		panic(err)
+		log.Fatal().Err(err).Msg("pc.SinkByID failed")
 	}
 
 	lTargetMicros := uint64(cfg.LatencyTarget * 1000)
 	var latency = lTargetMicros
 
-	r := NewResampler(lTargetMicros, 10000)
+	r := NewResampler(lTargetMicros, lTargetMicros/10)
 	lastPktNum := -1
 	i := 0
 
@@ -187,7 +190,7 @@ func streamToPulse() {
 				time.AfterFunc(5*time.Second, func() {
 					lat := atomic.LoadUint64(&latency)
 					excessSamples := ((int64(lat) - int64(lTargetMicros)) * 48000 / 1e6)
-					fmt.Println("excessSamples:", excessSamples)
+					log.Debug().Int64("excess_samples", excessSamples).Msg("Want to drop")
 					if excessSamples > 0 {
 						atomic.StoreInt64(&drop, excessSamples)
 					}
@@ -226,7 +229,7 @@ func streamToPulse() {
 					if lastPktNum != -1 {
 						diff := (16 + pktNum - lastPktNum) % 16
 						if diff != 1 {
-							log.Println("discontinuity:", diff)
+							log.Warn().Int("gap", diff).Msg("VITA packet discontinuity")
 						}
 					}
 					lastPktNum = pktNum
@@ -244,7 +247,7 @@ func streamToPulse() {
 						n -= int(d)
 						samples = samples[:n]
 						atomic.AddInt64(&drop, -d)
-						fmt.Println("drop", d)
+						log.Debug().Int64("n", d).Msg("dropped samples")
 					}
 
 					if n > availToWrite {
@@ -265,7 +268,8 @@ func streamToPulse() {
 					i = (i + 1) % 375
 					if cfg.DebugTiming && (i == 0 || i == 187) { /* once a second */
 						msg := r.Stats(lat)
-						log.Println(msg, len(vitaPackets), "/", cap(vitaPackets))
+						msg += fmt.Sprintf(" %d/%d", len(vitaPackets), cap(vitaPackets))
+						log.Debug().Msg("timing " + msg)
 					}
 				}
 			}
@@ -294,7 +298,7 @@ func streamToPulse() {
 	)
 
 	if err != nil {
-		panic(err)
+		log.Panic().Err(err).Msg("pc.NewPlayback failed")
 	}
 
 	go func() {
@@ -312,7 +316,6 @@ func streamToPulse() {
 				bufLock.RLock()
 				ourBufferSamples := uint64(len(vitaPackets)*256 + len(buf))
 				bufLock.RUnlock()
-				//				log.Println(deviceLat, pulseBufferSamples, ourBufferSamples)
 				lat := deviceLat + uint64((pulseBufferSamples+ourBufferSamples)*1e6/48000)
 				atomic.StoreUint64(&latency, lat)
 			case <-done:
@@ -340,7 +343,7 @@ func allZero(buf []byte) bool {
 func streamFromPulse(exit chan struct{}) {
 	tmp, err := strconv.ParseUint(TXStreamID, 16, 32)
 	if err != nil {
-		panic(err)
+		log.Fatal().Err(err).Msg("Parse TXStreamID failed")
 	}
 
 	StreamIDInt := uint32(tmp)
@@ -349,7 +352,7 @@ func streamFromPulse(exit chan struct{}) {
 
 	source, err := pc.SourceByID(cfg.Source + ".monitor")
 	if err != nil {
-		panic(err)
+		log.Fatal().Err(err).Msg("pc.SourceByID failed")
 	}
 
 	var pktCount uint16
@@ -406,7 +409,7 @@ func streamFromPulse(exit chan struct{}) {
 	)
 
 	if err != nil {
-		panic(err)
+		log.Fatal().Err(err).Msg("pc.NewRecord failed")
 	}
 
 	stream.Start()
@@ -416,12 +419,28 @@ func streamFromPulse(exit chan struct{}) {
 }
 
 func main() {
+	log.Logger = zerolog.New(
+		zerolog.ConsoleWriter{
+			Out: os.Stderr,
+		},
+	).With().Timestamp().Logger()
+
 	flag.Parse()
 
-	var err error
+	logLevel, err := zerolog.ParseLevel(cfg.LogLevel)
+	if err != nil {
+		log.Fatal().Str("level", cfg.LogLevel).Msg("Unknown log level")
+	}
+
+	if cfg.DebugTiming && logLevel > zerolog.DebugLevel {
+		logLevel = zerolog.DebugLevel
+	}
+
+	zerolog.SetGlobalLevel(logLevel)
+
 	fc, err = flexclient.NewFlexClient(cfg.RadioIP)
 	if err != nil {
-		panic(err)
+		log.Fatal().Err(err).Msg("NewFlexClient failed")
 	}
 
 	pc, err = pulse.NewClient(
@@ -429,30 +448,30 @@ func main() {
 	)
 
 	if err != nil {
-		panic(err)
+		log.Fatal().Err(err).Msg("pulse.NewClient failed")
 	}
 
 	err = ensureCLI()
 	if err != nil {
-		panic(err)
+		log.Fatal().Err(err).Msg("Ensuring Pulse CLI failed")
 	}
 
 	pcli, err = NewPulseCLI()
 	if err != nil {
-		panic(err)
+		log.Fatal().Err(err).Msg("NewPulseCLI failed")
 	}
 	defer pcli.Close()
 
 	sinkIdx, err := createLoopback(cfg.Sink, "[INTERNAL] Flex RX Loopback", "emblem-symbolic-link", "Flex RX", "radio")
 	if err != nil {
-		panic(err)
+		log.Fatal().Err(err).Msg("Create RX loopback failed")
 	}
 	defer destroyLoopback(sinkIdx)
 
 	if cfg.TX {
 		sourceIdx, err := createLoopback(cfg.Source, "Flex TX", "radio", "[INTERNAL] Flex TX Loopback", "emblem-symbolic-link")
 		if err != nil {
-			panic(err)
+			log.Fatal().Err(err).Msg("Create TX loopback failed")
 		}
 		defer destroyLoopback(sourceIdx)
 	}
@@ -471,13 +490,13 @@ func main() {
 		c := make(chan os.Signal, 1)
 		signal.Notify(c, os.Interrupt)
 		<-c
-		log.Println("Exit on SIGINT")
+		log.Info().Msg("Exit on SIGINT")
 		fc.Close()
 	}()
 
 	err = fc.InitUDP()
 	if err != nil {
-		panic(err)
+		log.Fatal().Err(err).Msg("fc.InitUDP failed")
 	}
 
 	go func() {
