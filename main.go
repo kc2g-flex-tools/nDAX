@@ -142,6 +142,39 @@ func enableDax() {
 	}
 }
 
+var lastPktNum = -1
+var byteReader bytes.Reader
+
+func decodePacket(pkt *flexclient.VitaPacket, streamID uint32, dst []float32, drop *int64) []float32 {
+	if pkt.Preamble.Class_id.PacketClassCode == 0x03e3 && pkt.Preamble.Stream_id == streamID {
+		pktNum := int(pkt.Preamble.Header.Packet_count)
+		if lastPktNum != -1 {
+			diff := (16 + pktNum - lastPktNum) % 16
+			if diff != 1 {
+				log.Warn().Int("gap", diff).Msg("VITA packet discontinuity")
+			}
+		}
+		lastPktNum = pktNum
+
+		samples := make([]float32, len(pkt.Payload)/4)
+		byteReader.Reset(pkt.Payload)
+		binary.Read(&byteReader, binary.BigEndian, samples)
+
+		dst = append(dst, samples...)
+		d := int(atomic.LoadInt64(drop))
+		if d > len(dst) {
+			d = len(dst)
+		}
+		if d > 0 {
+			copy(dst, dst[d:])
+			dst = dst[:len(dst)-d]
+			atomic.AddInt64(drop, int64(-d))
+		}
+	}
+
+	return dst
+}
+
 func streamToPulse() {
 	tmp, err := strconv.ParseUint(RXStreamID, 16, 32)
 	if err != nil {
@@ -158,18 +191,17 @@ func streamToPulse() {
 	lTargetMicros := uint64(cfg.LatencyTarget * 1000)
 	var latency = lTargetMicros
 
-	r := NewResampler(lTargetMicros, lTargetMicros/10)
-	lastPktNum := -1
-	i := 0
+	r := NewResampler(lTargetMicros, 20)
+	var drop int64
 
-	vitaPackets := make(chan flexclient.VitaPacket, int(cfg.LatencyTarget*48/256+1))
+	vitaPackets := make(chan flexclient.VitaPacket, int(cfg.LatencyTarget*48/256+100))
 	var buf []float32
 	var bufLock sync.RWMutex
 	done := make(chan struct{})
 	started := false
 	startedChan := make(chan struct{})
 	updateLatency := make(chan struct{}, 1)
-	var drop int64
+	var updTimer, statsTimer int
 
 	var stream *pulse.PlaybackStream
 
@@ -191,94 +223,58 @@ func streamToPulse() {
 					lat := atomic.LoadUint64(&latency)
 					excessSamples := ((int64(lat) - int64(lTargetMicros)) * 48000 / 1e6)
 					log.Debug().Int64("excess_samples", excessSamples).Msg("Want to drop")
+
 					if excessSamples > 0 {
+						r.accum = 0
 						atomic.StoreInt64(&drop, excessSamples)
 					}
 				})
 			}
-			availToWrite := len(out)
-			written := 0
 
-			// First, copy out any bits of packet that may have been left over from last time.
-			bufLock.Lock()
-			if len(buf) > 0 {
-				n := len(buf)
-				if n > availToWrite {
-					n = availToWrite
+		READPACKETS:
+			for {
+				select {
+				case pkt, ok := <-vitaPackets:
+					if !ok {
+						done <- struct{}{}
+						return 0, pulse.EndOfData
+					}
+					buf = decodePacket(&pkt, StreamIDInt, buf, &drop)
+				default:
+					if len(buf) < len(out)/2 {
+						pkt, ok := <-vitaPackets
+						if !ok {
+							done <- struct{}{}
+							return 0, pulse.EndOfData
+						}
+						buf = decodePacket(&pkt, StreamIDInt, buf, &drop)
+					} else {
+						break READPACKETS
+					}
 				}
-
-				copy(out[:n], buf)
-				copy(buf, buf[n:])
-				buf = buf[:len(buf)-n]
-
-				availToWrite -= n
-				written += n
 			}
+
+			lat := atomic.LoadUint64(&latency)
+			bufLock.Lock()
+			produced, consumed := r.Resample(buf, out, lat)
+			copy(buf, buf[consumed:])
+			buf = buf[:len(buf)-consumed]
 			bufLock.Unlock()
 
-			// Then, if there's still space, read and decode more packets, and fill the buffer.
-			for availToWrite > 0 {
-				pkt, ok := <-vitaPackets
-				if !ok {
-					done <- struct{}{}
-					return written, pulse.EndOfData
-				}
-
-				if pkt.Preamble.Class_id.PacketClassCode == 0x03e3 && pkt.Preamble.Stream_id == StreamIDInt {
-					pktNum := int(pkt.Preamble.Header.Packet_count)
-					if lastPktNum != -1 {
-						diff := (16 + pktNum - lastPktNum) % 16
-						if diff != 1 {
-							log.Warn().Int("gap", diff).Msg("VITA packet discontinuity")
-						}
-					}
-					lastPktNum = pktNum
-
-					lat := atomic.LoadUint64(&latency)
-					samples := r.ResamplePacket(pkt.Payload, lat)
-
-					n := len(samples)
-
-					d := atomic.LoadInt64(&drop)
-					if d > 0 {
-						if int(d) > n {
-							d = int64(n)
-						}
-						n -= int(d)
-						samples = samples[:n]
-						atomic.AddInt64(&drop, -d)
-						log.Debug().Int64("n", d).Msg("dropped samples")
-					}
-
-					if n > availToWrite {
-						n = availToWrite
-					}
-
-					copy(out[written:written+n], samples[:n])
-					written += n
-					availToWrite -= n
-
-					// If the last packet overfills the output space, then store the remainder
-					if availToWrite == 0 {
-						bufLock.Lock()
-						buf = samples[n:]
-						bufLock.Unlock()
-					}
-
-					i = (i + 1) % 375
-					if cfg.DebugTiming && (i == 0 || i == 187) { /* once a second */
-						msg := r.Stats(lat)
-						msg += fmt.Sprintf(" %d/%d", len(vitaPackets), cap(vitaPackets))
-						log.Debug().Msg("timing " + msg)
-					}
-				}
-			}
-
-			if i%15 == 0 {
+			updTimer += produced
+			if updTimer > 4800 {
 				updateLatency <- struct{}{}
+				updTimer -= 4800
 			}
 
-			return written, nil
+			statsTimer += produced
+			if statsTimer > 48000 {
+				msg := r.Stats(lat)
+				log.Debug().Msg("timing " + msg)
+				statsTimer -= 48000
+			}
+
+			return produced, nil
 		}),
 		pulse.PlaybackSink(sink),
 		pulse.PlaybackSampleRate(48000),
@@ -288,7 +284,7 @@ func streamToPulse() {
 		pulse.PlaybackMediaIconName("radio"),
 		pulse.PlaybackRawOption(func(c *proto.CreatePlaybackStream) {
 			c.BufferMaxLength = c.BufferTargetLength * 4
-			c.BufferPrebufferLength = c.BufferTargetLength - 9600
+			c.BufferPrebufferLength = c.BufferTargetLength
 			if c.BufferPrebufferLength < 2048 {
 				c.BufferPrebufferLength = 2048
 			}
