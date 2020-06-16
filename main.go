@@ -191,7 +191,7 @@ func streamToPulse() {
 	lTargetMicros := uint64(cfg.LatencyTarget * 1000)
 	var latency = lTargetMicros
 
-	r := NewResampler(lTargetMicros, 20)
+	r := NewResampler(lTargetMicros, 42)
 	var drop int64
 
 	vitaPackets := make(chan flexclient.VitaPacket, int(cfg.LatencyTarget*48/256+100))
@@ -226,6 +226,7 @@ func streamToPulse() {
 
 					if excessSamples > 0 {
 						r.accum = 0
+						r.fll = 0
 						atomic.StoreInt64(&drop, excessSamples)
 					}
 				})

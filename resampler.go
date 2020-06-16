@@ -18,6 +18,7 @@ type Resampler struct {
 	maxLatency    uint64
 	holdoff       int
 	fll           float64
+	runningFor    int
 }
 
 // TODO: parametrize this on sample rate and packet size, so the control loop isn't powered by magic numbers.
@@ -42,7 +43,7 @@ func (r *Resampler) Resample(in, out []float32, latency uint64) (produced int, c
 	}
 
 	err := (float64(latency) - r.latencyTarget) / 1e6
-	pll := err / 600
+	pll := err / 300 // Slope to zero phase error within 5 minutes
 
 CHUNK:
 	for {
@@ -59,13 +60,20 @@ CHUNK:
 		nCopy := avail
 		var add, drop bool
 
-		upper := r.tolerance - r.accum
-		lower := -r.tolerance - r.accum
-		rate := pll + r.fll
-		proj := float64(avail) * rate
+		rate := pll + 0.9*r.fll
 
-		if proj < lower {
-			x := int(math.Round(lower / rate))
+		const ratelimit = 500e-6 // max skew: 500ppm
+
+		if rate > ratelimit {
+			rate = ratelimit
+		} else if rate < -ratelimit {
+			rate = -ratelimit
+		}
+
+		proj := r.accum + float64(avail)*rate
+
+		if proj < -r.tolerance {
+			x := int(math.Ceil((r.tolerance + r.accum) / -rate))
 
 			if x < r.holdoff {
 				x = r.holdoff
@@ -79,8 +87,8 @@ CHUNK:
 				nCopy = x
 				add = true
 			}
-		} else if proj > upper {
-			x := int(math.Round(upper / rate))
+		} else if r.accum+proj > r.tolerance {
+			x := int(math.Ceil((r.tolerance - r.accum) / rate))
 
 			if x < r.holdoff {
 				x = r.holdoff
@@ -101,12 +109,7 @@ CHUNK:
 			r.holdoff = 0
 		}
 
-		r.accum += pll * float64(nCopy)
-		if r.accum > r.tolerance {
-			r.accum = r.tolerance
-		} else if r.accum < -r.tolerance {
-			r.accum = -r.tolerance
-		}
+		r.accum += rate * float64(nCopy)
 
 		if add {
 			out[produced] = (out[produced-1] + in[consumed]) / 2
@@ -114,15 +117,24 @@ CHUNK:
 			p += 1
 			r.padded += 1
 			r.accum += 1
-			r.holdoff = 2400
+			r.holdoff = 1000
 		} else if drop {
 			consumed += 1
 			r.dropped += 1
 			r.accum -= 1
-			r.holdoff = 2400
+			r.holdoff = 1000
 		}
 
-		frac := (float64(p) / 48000) / 10
+		var frac float64
+		if r.runningFor < 10*48000 {
+			frac = 0
+			r.runningFor += p
+		} else if r.runningFor < 120*48000 {
+			frac = float64(p) / 48000
+			r.runningFor += p
+		} else {
+			frac = (float64(p) / 48000) / 5
+		}
 		r.fll = (1-frac)*r.fll + frac*rate
 	}
 
@@ -138,7 +150,7 @@ func (r *Resampler) Stats(latency uint64) string {
 		r.wrapped = true
 	}
 
-	msg := fmt.Sprintf("%7d %7d %7.3f %7.3f +%-3d -%-3d", (r.minLatency+r.maxLatency)/2, r.maxLatency-r.minLatency, r.accum, -48000*r.fll, r.padded, r.dropped)
+	msg := fmt.Sprintf("%7d %7d %7.3f %8.6f +%-3d -%-3d", (r.minLatency+r.maxLatency)/2, r.maxLatency-r.minLatency, r.accum, -48000*r.fll, r.padded, r.dropped)
 	if r.wrapped {
 		rate := float64(diff) / float64(len(r.latHist))
 		msg += fmt.Sprintf(" %8.3f %11.5f", rate, (1+rate/1e6)*48000)
