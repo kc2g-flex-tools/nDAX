@@ -3,47 +3,48 @@ package main
 import (
 	"fmt"
 	"math"
+	"sort"
+	"sync"
+	"time"
+	//	log "github.com/rs/zerolog/log"
 )
 
 type Resampler struct {
+	sync.RWMutex
+	Filter        *LatencyFilter
 	latencyTarget float64
 	tolerance     float64
-	latHist       [60]uint64
-	histIndex     int
-	wrapped       bool
 	accum         float64
 	dropped       int
 	padded        int
-	minLatency    uint64
-	maxLatency    uint64
 	holdoff       int
 	fll           float64
 	runningFor    int
 }
 
 // TODO: parametrize this on sample rate and packet size, so the control loop isn't powered by magic numbers.
-func NewResampler(target, tolerance uint64) *Resampler {
+func NewResampler(target, tolerance float64, filter *LatencyFilter) *Resampler {
 	return &Resampler{
-		latencyTarget: float64(target),
-		tolerance:     float64(tolerance) * 48000 / 1e6,
-		minLatency:    ^uint64(0),
+		latencyTarget: target,
+		tolerance:     tolerance,
+		Filter:        filter,
 	}
 }
 
-func interpolateSample(prev, next float32) float32 {
-	return (prev + next) / 2
-}
+func (r *Resampler) Resample(in, out []float32) (produced int, consumed int) {
+	r.Lock()
+	defer r.Unlock()
 
-func (r *Resampler) Resample(in, out []float32, latency uint64) (produced int, consumed int) {
-	if latency < r.minLatency {
-		r.minLatency = latency
-	}
-	if latency > r.maxLatency {
-		r.maxLatency = latency
+	latency, slope := r.Filter.Get(0, 0)
+
+	if slope > 100e-6 {
+		slope = 100e-6
+	} else if slope < -100e-6 {
+		slope = -100e-6
 	}
 
-	err := (float64(latency) - r.latencyTarget) / 1e6
-	pll := err / 300 // Slope to zero phase error within 5 minutes
+	err := (latency + 180*slope - r.latencyTarget) / 1e6
+	pll := err / 240
 
 CHUNK:
 	for {
@@ -60,10 +61,21 @@ CHUNK:
 		nCopy := avail
 		var add, drop bool
 
-		rate := pll + 0.9*r.fll
-
 		const ratelimit = 500e-6 // max skew: 500ppm
 
+		if pll > ratelimit {
+			pll = ratelimit
+		} else if pll < -ratelimit {
+			pll = -ratelimit
+		}
+
+		if r.fll > ratelimit {
+			r.fll = ratelimit
+		} else if r.fll < -ratelimit {
+			r.fll = -ratelimit
+		}
+
+		rate := pll + r.fll
 		if rate > ratelimit {
 			rate = ratelimit
 		} else if rate < -ratelimit {
@@ -130,37 +142,168 @@ CHUNK:
 			frac = 0
 			r.runningFor += p
 		} else if r.runningFor < 120*48000 {
-			frac = float64(p) / 48000
+			frac = (float64(p) / 48000) / 2
 			r.runningFor += p
 		} else {
-			frac = (float64(p) / 48000) / 5
+			frac = (float64(p) / 48000) / 10
 		}
-		r.fll = (1-frac)*r.fll + frac*rate
+		r.fll = (1-frac)*r.fll + frac*(0.999*r.fll+0.05*pll)
 	}
 
 	return
 }
 
-func (r *Resampler) Stats(latency uint64) string {
-	diff := int64(latency - r.latHist[r.histIndex])
+func (r *Resampler) Stats() string {
+	r.RLock()
+	defer r.RUnlock()
+	avg, slope := r.Filter.Get(0, 0)
 
-	r.latHist[r.histIndex] = latency
-	r.histIndex = (r.histIndex + 1) % len(r.latHist)
-	if r.histIndex == 0 && !r.wrapped {
-		r.wrapped = true
-	}
-
-	msg := fmt.Sprintf("%7d %7d %7.3f %8.6f +%-3d -%-3d", (r.minLatency+r.maxLatency)/2, r.maxLatency-r.minLatency, r.accum, -48000*r.fll, r.padded, r.dropped)
-	if r.wrapped {
-		rate := float64(diff) / float64(len(r.latHist))
-		msg += fmt.Sprintf(" %8.3f %11.5f", rate, (1+rate/1e6)*48000)
-	}
+	msg := fmt.Sprintf("%7.1f %7.1f %7.3f %7.3f +%-3d -%-3d %7.3f %11.5f", avg, avg+60*slope, r.accum, -48000*r.fll, r.padded, r.dropped, slope, (1+slope/1e6)*48000)
 
 	// Reset stats for next time
-	r.minLatency = ^uint64(0)
-	r.maxLatency = 0
 	r.padded = 0
 	r.dropped = 0
 
 	return msg
+}
+
+func (r *Resampler) Reset() {
+	r.Lock()
+	defer r.Unlock()
+	r.Filter.Reset()
+	r.accum = 0
+	r.fll = 0
+}
+
+type LatencyMeasurement struct {
+	Latency    float64
+	MeasuredAt time.Time
+}
+
+type SortByLatency []LatencyMeasurement
+
+func (s SortByLatency) Len() int {
+	return len(s)
+}
+
+func (s SortByLatency) Less(i, j int) bool {
+	return s[i].Latency < s[j].Latency
+}
+
+func (s SortByLatency) Swap(i, j int) {
+	s[i], s[j] = s[j], s[i]
+}
+
+type LatencyFilter struct {
+	sync.RWMutex
+	AvgWindow   time.Duration
+	SlopeWindow time.Duration
+
+	history []LatencyMeasurement
+}
+
+func (f *LatencyFilter) Put(meas LatencyMeasurement) {
+	f.Lock()
+	defer f.Unlock()
+	f.history = append(f.history, meas)
+	biggerWindow := f.SlopeWindow
+	if f.AvgWindow > biggerWindow {
+		biggerWindow = f.AvgWindow
+	}
+
+	i := 0
+	for i < len(f.history) && f.history[len(f.history)-1].MeasuredAt.Sub(f.history[i].MeasuredAt) > biggerWindow {
+		i++
+	}
+
+	if i > 0 {
+		copy(f.history, f.history[i:])
+		f.history = f.history[:len(f.history)-i]
+	}
+}
+
+func (f *LatencyFilter) Get(avgWindow, slopeWindow time.Duration) (avg, slope float64) {
+	f.RLock()
+	defer f.RUnlock()
+
+	if avgWindow == 0 || avgWindow > f.AvgWindow {
+		avgWindow = f.AvgWindow
+	}
+
+	if slopeWindow == 0 || slopeWindow > f.SlopeWindow {
+		slopeWindow = f.SlopeWindow
+	}
+
+	i := 0
+	for i < len(f.history) && f.history[len(f.history)-1].MeasuredAt.Sub(f.history[i].MeasuredAt) > avgWindow {
+		i++
+	}
+
+	n := len(f.history) - i
+	tmp := make([]LatencyMeasurement, n)
+	copy(tmp, f.history[i:])
+	sort.Sort(SortByLatency(tmp))
+
+	lo := n / 8
+	hi := n - lo
+
+	var sum, ct float64
+
+	for i := lo; i < hi; i++ {
+		sum += tmp[i].Latency
+		ct += 1
+	}
+
+	if ct > 0 {
+		avg = sum / ct
+	}
+
+	var sumx, sumy, sumxx, sumxy float64
+
+	i = 0
+	for i < len(f.history) && f.history[len(f.history)-1].MeasuredAt.Sub(f.history[i].MeasuredAt) > slopeWindow {
+		i++
+	}
+
+	n = len(f.history) - i
+
+	if n == 0 {
+		return
+	}
+
+	tmp = make([]LatencyMeasurement, n)
+	copy(tmp, f.history[i:])
+	sort.Sort(SortByLatency(tmp))
+
+	lo = n / 8
+	hi = n - lo
+
+	loLat := tmp[lo].Latency
+	hiLat := tmp[hi-1].Latency
+
+	n = 0
+	for j := i; j < len(f.history); j++ {
+		y := f.history[j].Latency
+		if y >= loLat && y <= hiLat {
+			x := f.history[j].MeasuredAt.Sub(f.history[i].MeasuredAt).Seconds()
+			sumx += x
+			sumy += y
+			sumxx += x * x
+			sumxy += x * y
+			n++
+		}
+	}
+
+	if n > 0 && sumx > 0 {
+		slope = (sumxy - sumx*sumy/float64(n)) / (sumxx - sumx*sumx/float64(n))
+	}
+
+	return
+}
+
+func (f *LatencyFilter) Reset() {
+	f.Lock()
+	defer f.Unlock()
+
+	f.history = f.history[:0]
 }

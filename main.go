@@ -188,10 +188,13 @@ func streamToPulse() {
 		log.Fatal().Err(err).Msg("pc.SinkByID failed")
 	}
 
-	lTargetMicros := uint64(cfg.LatencyTarget * 1000)
-	var latency = lTargetMicros
+	lTargetMicros := float64(cfg.LatencyTarget * 1000)
 
-	r := NewResampler(lTargetMicros, 42)
+	r := NewResampler(lTargetMicros, 1.25, &LatencyFilter{
+		AvgWindow:   5 * time.Second,
+		SlopeWindow: 10 * time.Second,
+	})
+
 	var drop int64
 
 	vitaPackets := make(chan flexclient.VitaPacket, int(cfg.LatencyTarget*48/256+100))
@@ -220,13 +223,12 @@ func streamToPulse() {
 				// do a jam sync, because it's preferable than having a wonky rate for several minutes to drag it
 				// into sync.
 				time.AfterFunc(5*time.Second, func() {
-					lat := atomic.LoadUint64(&latency)
+					lat, _ := r.Filter.Get(1*time.Second, 0)
 					excessSamples := ((int64(lat) - int64(lTargetMicros)) * 48000 / 1e6)
 					log.Debug().Int64("excess_samples", excessSamples).Msg("Want to drop")
 
 					if excessSamples > 0 {
-						r.accum = 0
-						r.fll = 0
+						r.Reset()
 						atomic.StoreInt64(&drop, excessSamples)
 					}
 				})
@@ -255,9 +257,8 @@ func streamToPulse() {
 				}
 			}
 
-			lat := atomic.LoadUint64(&latency)
 			bufLock.Lock()
-			produced, consumed := r.Resample(buf, out, lat)
+			produced, consumed := r.Resample(buf, out)
 			copy(buf, buf[consumed:])
 			buf = buf[:len(buf)-consumed]
 			bufLock.Unlock()
@@ -270,7 +271,7 @@ func streamToPulse() {
 
 			statsTimer += produced
 			if statsTimer > 48000 {
-				msg := r.Stats(lat)
+				msg := r.Stats()
 				log.Debug().Msg("timing " + msg)
 				statsTimer -= 48000
 			}
@@ -314,7 +315,11 @@ func streamToPulse() {
 				ourBufferSamples := uint64(len(vitaPackets)*256 + len(buf))
 				bufLock.RUnlock()
 				lat := deviceLat + uint64((pulseBufferSamples+ourBufferSamples)*1e6/48000)
-				atomic.StoreUint64(&latency, lat)
+				r.Filter.Put(LatencyMeasurement{
+					Latency:    float64(lat),
+					MeasuredAt: time.Now(),
+				})
+
 			case <-done:
 				return
 			}
