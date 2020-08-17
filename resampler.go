@@ -44,7 +44,7 @@ func (r *Resampler) Resample(in, out []float32) (produced int, consumed int) {
 	}
 
 	err := (latency + 180*slope - r.latencyTarget) / 1e6
-	pll := err / 240
+	pll := err / 210
 
 CHUNK:
 	for {
@@ -75,7 +75,7 @@ CHUNK:
 			r.fll = -ratelimit
 		}
 
-		rate := pll + r.fll
+		rate := pll + 0.95*r.fll
 		if rate > ratelimit {
 			rate = ratelimit
 		} else if rate < -ratelimit {
@@ -99,7 +99,7 @@ CHUNK:
 				nCopy = x
 				add = true
 			}
-		} else if r.accum+proj > r.tolerance {
+		} else if proj > r.tolerance {
 			x := int(math.Ceil((r.tolerance - r.accum) / rate))
 
 			if x < r.holdoff {
@@ -142,12 +142,13 @@ CHUNK:
 			frac = 0
 			r.runningFor += p
 		} else if r.runningFor < 120*48000 {
-			frac = (float64(p) / 48000) / 2
+			frac = (float64(p) / 48000) / 30
 			r.runningFor += p
 		} else {
-			frac = (float64(p) / 48000) / 10
+			frac = (float64(p) / 48000) / 300
 		}
-		r.fll = (1-frac)*r.fll + frac*(0.999*r.fll+0.05*pll)
+
+		r.fll = (1-frac)*r.fll + frac*(slope/1e6+rate)
 	}
 
 	return
