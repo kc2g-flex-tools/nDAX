@@ -1,8 +1,8 @@
 github.com/coreos/go-systemd v0.0.0-20190321100706-95778dfbb74e/go.mod h1:F5haX7vjVVG0kc13fIWeqUViNPyEJxv/OmvnBo0Yme4=
 github.com/godbus/dbus v4.1.0+incompatible h1:WqqLRTsQic3apZUK9qC5sGNfXthmPXzUZ7nQPrNITa4=
 github.com/godbus/dbus v4.1.0+incompatible/go.mod h1:/YcGZj5zSblfDWMMoOzV4fas9FZnQYTkDnsGvmh2Grw=
-github.com/jfreymuth/pulse v0.0.0-20200424182717-3b0820ad352f h1:XyMNiJ5vCUTlgl4R/pfw11rzt1sbdzNLbZCk/bb3LfU=
-github.com/jfreymuth/pulse v0.0.0-20200424182717-3b0820ad352f/go.mod h1:cpYspI6YljhkUf1WLXLLDmeaaPFc3CnGLjDZf9dZ4no=
+github.com/jfreymuth/pulse v0.0.0-20200817093420-a82ccdb5e8aa h1:qUZIj5+D3UDgfshNe8Cz/9maOxe8ddt43qwQH9vEEC8=
+github.com/jfreymuth/pulse v0.0.0-20200817093420-a82ccdb5e8aa/go.mod h1:cpYspI6YljhkUf1WLXLLDmeaaPFc3CnGLjDZf9dZ4no=
 github.com/kc2g-flex-tools/flexclient v0.0.0-20200509012320-cd287adca070 h1:eIAxDzKkd+HwQvlgQx4e8GzbGsL7q6DH0rZzeamPRKs=
 github.com/kc2g-flex-tools/flexclient v0.0.0-20200509012320-cd287adca070/go.mod h1:xNkx45ZycxDy8K0IdJokHYP6ynECczBqSeemrm+xsyk=
 github.com/krippendorf/flexlib-go v0.0.0-20190915173206-0615603c3e03 h1:Ms006cLD8bjmWhelibnwBZzKMg4rxmASRSf04ymxALc=
