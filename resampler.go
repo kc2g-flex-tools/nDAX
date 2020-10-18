@@ -44,7 +44,10 @@ func (r *Resampler) Resample(in, out []float32) (produced int, consumed int) {
 	}
 
 	err := (latency + 180*slope - r.latencyTarget) / 1e6
-	pll := err / 210
+	knee := 0.02e-6*r.latencyTarget + 1e-3
+	factor := math.Abs(err) / (math.Abs(err) + knee)
+	err *= factor
+	pll := err / 180
 
 CHUNK:
 	for {
@@ -75,7 +78,7 @@ CHUNK:
 			r.fll = -ratelimit
 		}
 
-		rate := pll + 0.95*r.fll
+		rate := pll + 0.98*r.fll
 		if rate > ratelimit {
 			rate = ratelimit
 		} else if rate < -ratelimit {
@@ -145,10 +148,10 @@ CHUNK:
 			frac = (float64(p) / 48000) / 30
 			r.runningFor += p
 		} else {
-			frac = (float64(p) / 48000) / 300
+			frac = (float64(p) / 48000) / 240
 		}
 
-		r.fll = (1-frac)*r.fll + frac*(slope/1e6+rate)
+		r.fll = (1-frac)*r.fll + frac*(48000*slope/1e6+rate)
 	}
 
 	return
