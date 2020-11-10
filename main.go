@@ -10,11 +10,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/jfreymuth/pulse"
-	"github.com/jfreymuth/pulse/proto"
 	"github.com/kc2g-flex-tools/flexclient"
 	"github.com/rs/zerolog"
 	log "github.com/rs/zerolog/log"
@@ -145,192 +143,27 @@ func enableDax() {
 var lastPktNum = -1
 var byteReader bytes.Reader
 
-func decodePacket(pkt *flexclient.VitaPacket, streamID uint32, dst []float32, drop *int64) []float32 {
-	if pkt.Preamble.Class_id.PacketClassCode == 0x03e3 && pkt.Preamble.Stream_id == streamID {
-		pktNum := int(pkt.Preamble.Header.Packet_count)
-		if lastPktNum != -1 {
-			diff := (16 + pktNum - lastPktNum) % 16
-			if diff != 1 {
-				log.Warn().Int("gap", diff).Msg("VITA packet discontinuity")
-			}
-		}
-		lastPktNum = pktNum
-
-		samples := make([]float32, len(pkt.Payload)/4)
-		byteReader.Reset(pkt.Payload)
-		binary.Read(&byteReader, binary.BigEndian, samples)
-
-		dst = append(dst, samples...)
-		d := int(atomic.LoadInt64(drop))
-		if d > len(dst) {
-			d = len(dst)
-		}
-		if d > 0 {
-			copy(dst, dst[d:])
-			dst = dst[:len(dst)-d]
-			atomic.AddInt64(drop, int64(-d))
-		}
-	}
-
-	return dst
-}
-
-func streamToPulse() {
-	tmp, err := strconv.ParseUint(RXStreamID, 16, 32)
-	if err != nil {
-		log.Fatal().Err(err).Msg("Parse RXStreamID failed")
-	}
-
-	StreamIDInt := uint32(tmp)
-
-	sink, err := pc.SinkByID(cfg.Sink)
-	if err != nil {
-		log.Fatal().Err(err).Msg("pc.SinkByID failed")
-	}
-
-	lTargetMicros := float64(cfg.LatencyTarget * 1000)
-
-	r := NewResampler(lTargetMicros, 1.25, &LatencyFilter{
-		AvgWindow:   5 * time.Second,
-		SlopeWindow: 10 * time.Second,
-	})
-
-	var drop int64
-
+func streamToPulse(pipe *os.File) {
 	vitaPackets := make(chan flexclient.VitaPacket, int(cfg.LatencyTarget*48/256+100))
-	var buf []float32
-	var bufLock sync.RWMutex
-	done := make(chan struct{})
-	started := false
-	startedChan := make(chan struct{})
-	updateLatency := make(chan struct{}, 1)
-	var updTimer, statsTimer int
+	fc.SetVitaChan(vitaPackets)
 
-	var stream *pulse.PlaybackStream
-
-	stream, err = pc.NewPlayback(
-		pulse.Float32Reader(func(out []float32) (int, error) {
-			if !started {
-				if cfg.Realtime {
-					requestRealtime("rx thread", 19)
-				}
-
-				started = true
-				startedChan <- struct{}{}
-
-				// This is a hack... for reasons I can't quite explain, we almost always end up with more in the buffer
-				// than we wanted to, just a moment after startup. Wait long enough for everything to settle, and then
-				// do a jam sync, because it's preferable than having a wonky rate for several minutes to drag it
-				// into sync.
-				time.AfterFunc(5*time.Second, func() {
-					lat, _ := r.Filter.Get(1*time.Second, 0)
-					excessSamples := ((int64(lat) - int64(lTargetMicros)) * 48000 / 1e6)
-					log.Debug().Int64("excess_samples", excessSamples).Msg("Want to drop")
-
-					if excessSamples > 0 {
-						r.Reset()
-						atomic.StoreInt64(&drop, excessSamples)
-					}
-				})
-			}
-
-		READPACKETS:
-			for {
-				select {
-				case pkt, ok := <-vitaPackets:
-					if !ok {
-						done <- struct{}{}
-						return 0, pulse.EndOfData
-					}
-					buf = decodePacket(&pkt, StreamIDInt, buf, &drop)
-				default:
-					if len(buf) < len(out)/2 {
-						pkt, ok := <-vitaPackets
-						if !ok {
-							done <- struct{}{}
-							return 0, pulse.EndOfData
-						}
-						buf = decodePacket(&pkt, StreamIDInt, buf, &drop)
-					} else {
-						break READPACKETS
-					}
-				}
-			}
-
-			bufLock.Lock()
-			produced, consumed := r.Resample(buf, out)
-			copy(buf, buf[consumed:])
-			buf = buf[:len(buf)-consumed]
-			bufLock.Unlock()
-
-			updTimer += produced
-			if updTimer > 4800 {
-				updateLatency <- struct{}{}
-				updTimer -= 4800
-			}
-
-			statsTimer += produced
-			if statsTimer > 48000 {
-				msg := r.Stats()
-				log.Debug().Msg("timing " + msg)
-				statsTimer -= 48000
-			}
-
-			return produced, nil
-		}),
-		pulse.PlaybackSink(sink),
-		pulse.PlaybackSampleRate(48000),
-		pulse.PlaybackMono,
-		pulse.PlaybackLatency(cfg.LatencyTarget/1000),
-		pulse.PlaybackMediaName("DAX RX "+cfg.Slice),
-		pulse.PlaybackMediaIconName("radio"),
-		pulse.PlaybackRawOption(func(c *proto.CreatePlaybackStream) {
-			c.BufferMaxLength = c.BufferTargetLength * 4
-			c.BufferPrebufferLength = c.BufferTargetLength
-			if c.BufferPrebufferLength < 2048 {
-				c.BufferPrebufferLength = 2048
-			}
-			c.AdjustLatency = false
-			c.BufferMinimumRequest = 1024
-		}),
-	)
-
-	if err != nil {
-		log.Panic().Err(err).Msg("pc.NewPlayback failed")
+	if cfg.Realtime {
+		requestRealtime("rx thread", 19)
 	}
 
-	go func() {
-		for {
-			select {
-			case <-updateLatency:
-				latRequest := proto.GetPlaybackLatency{
-					StreamIndex: stream.StreamIndex(),
-					Time:        proto.Time{0, 0},
-				}
-				var latReply proto.GetPlaybackLatencyReply
-				pc.RawRequest(&latRequest, &latReply)
-				deviceLat := uint64(latReply.Latency)
-				pulseBufferSamples := (uint64(latReply.WriteIndex) - uint64(latReply.ReadIndex)) / 4
-				bufLock.RLock()
-				ourBufferSamples := uint64(len(vitaPackets)*256 + len(buf))
-				bufLock.RUnlock()
-				lat := deviceLat + uint64((pulseBufferSamples+ourBufferSamples)*1e6/48000)
-				r.Filter.Put(LatencyMeasurement{
-					Latency:    float64(lat),
-					MeasuredAt: time.Now(),
-				})
-
-			case <-done:
+	for {
+		select {
+		case pkt, ok := <-vitaPackets:
+			if !ok {
+				pipe.Close()
 				return
 			}
+			_, err := pipe.Write(pkt.Payload)
+			if err != nil {
+				log.Warn().Err(err).Msg("pipe write")
+			}
 		}
-	}()
-
-	go stream.Start()
-	<-startedChan
-	fc.SetVitaChan(vitaPackets)
-	<-done
-	stream.Drain()
+	}
 }
 
 func allZero(buf []byte) bool {
@@ -342,7 +175,7 @@ func allZero(buf []byte) bool {
 	return true
 }
 
-func streamFromPulse(exit chan struct{}) {
+func streamFromPulse(pipe *os.File, exit chan struct{}) {
 	tmp, err := strconv.ParseUint(TXStreamID, 16, 32)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Parse TXStreamID failed")
@@ -350,74 +183,50 @@ func streamFromPulse(exit chan struct{}) {
 
 	StreamIDInt := uint32(tmp)
 
-	buf := ringbuffer.New(20 * 256 * 4)
+	const pktSize = 256 * 4
 
-	source, err := pc.SourceByID(cfg.Source + ".monitor")
-	if err != nil {
-		log.Fatal().Err(err).Msg("pc.SourceByID failed")
+	buf := ringbuffer.New(20 * pktSize)
+
+	var readBuf [pktSize]byte
+
+	if cfg.Realtime {
+		requestRealtime("tx thread", 19)
 	}
 
 	var pktCount uint16
-	started := false
 
-	var stream *pulse.RecordStream
-	stream, err = pc.NewRecord(
-		pulse.Float32Writer(func(in []float32) (int, error) {
-			if !started {
-				if cfg.Realtime {
-					requestRealtime("tx thread", 19)
-				}
-				started = true
-			}
+	for {
+		n, err := pipe.Read(readBuf[:])
+		if err != nil {
+			log.Error().Err(err).Msg("pipe read")
+			return
+		}
+		buf.Write(readBuf[:n])
 
-			const pktSize = 256 * 4
-			binary.Write(buf, binary.BigEndian, in)
+		for buf.Length() >= pktSize {
+			var rawSamples [pktSize]byte
+			buf.Read(rawSamples[:])
 
-			for buf.Length() >= pktSize {
-				var rawSamples [pktSize]byte
-				buf.Read(rawSamples[:])
-
-				if allZero(rawSamples[:]) {
-					pktCount += 1
-					continue
-				}
-
-				var pkt bytes.Buffer
-				pkt.WriteByte(0x18)
-				pkt.WriteByte(0xd0 | byte(pktCount&0xf))
+			if allZero(rawSamples[:]) {
 				pktCount += 1
-				binary.Write(&pkt, binary.BigEndian, uint16(pktSize/4+7))
-				binary.Write(&pkt, binary.BigEndian, StreamIDInt)
-				binary.Write(&pkt, binary.BigEndian, uint64(0x00001c2d534c03e3))
-				binary.Write(&pkt, binary.BigEndian, uint32(0x00000000))
-				binary.Write(&pkt, binary.BigEndian, uint32(0x00000000))
-				binary.Write(&pkt, binary.BigEndian, uint32(0x00000000))
-				pkt.Write(rawSamples[:])
-				fc.SendUdp(pkt.Bytes())
-				time.Sleep(1 * time.Millisecond)
+				continue
 			}
 
-			return len(in), nil
-		}),
-		pulse.RecordSource(source),
-		pulse.RecordSampleRate(48000),
-		pulse.RecordMono,
-		pulse.RecordLatency(0.1),
-		pulse.RecordMediaName("DAX TX "+cfg.Slice),
-		pulse.RecordMediaIconName("audio-input-microphone"),
-		pulse.RecordRawOption(func(c *proto.CreateRecordStream) {
-			c.BufferFragSize = 256 * 4 // req 1 packet at a time exactly, we hope
-		}),
-	)
-
-	if err != nil {
-		log.Fatal().Err(err).Msg("pc.NewRecord failed")
+			var pkt bytes.Buffer
+			pkt.WriteByte(0x18)
+			pkt.WriteByte(0xd0 | byte(pktCount&0xf))
+			pktCount += 1
+			binary.Write(&pkt, binary.BigEndian, uint16(pktSize/4+7))
+			binary.Write(&pkt, binary.BigEndian, StreamIDInt)
+			binary.Write(&pkt, binary.BigEndian, uint64(0x00001c2d534c03e3))
+			binary.Write(&pkt, binary.BigEndian, uint32(0x00000000))
+			binary.Write(&pkt, binary.BigEndian, uint32(0x00000000))
+			binary.Write(&pkt, binary.BigEndian, uint32(0x00000000))
+			pkt.Write(rawSamples[:])
+			fc.SendUdp(pkt.Bytes())
+			time.Sleep(1 * time.Millisecond)
+		}
 	}
-
-	stream.Start()
-	defer stream.Close()
-
-	<-exit
 }
 
 func main() {
@@ -464,18 +273,21 @@ func main() {
 	}
 	defer pcli.Close()
 
-	sinkIdx, err := createLoopback(cfg.Sink, "[INTERNAL] Flex RX Loopback", "emblem-symbolic-link", "Flex RX", "radio")
+	sinkIdx, sinkPipe, err := createPipeSource(cfg.Sink, "Flex RX", "radio")
 	if err != nil {
-		log.Fatal().Err(err).Msg("Create RX loopback failed")
+		log.Fatal().Err(err).Msg("Create RX pipe failed")
 	}
-	defer destroyLoopback(sinkIdx)
+	defer destroyModule(sinkIdx)
+
+	var sourceIdx uint32
+	var sourcePipe *os.File
 
 	if cfg.TX {
-		sourceIdx, err := createLoopback(cfg.Source, "Flex TX", "radio", "[INTERNAL] Flex TX Loopback", "emblem-symbolic-link")
+		sourceIdx, sourcePipe, err = createPipeSink(cfg.Source, "Flex TX", "radio")
 		if err != nil {
-			log.Fatal().Err(err).Msg("Create TX loopback failed")
+			log.Fatal().Err(err).Msg("Create TX pipe failed")
 		}
-		defer destroyLoopback(sourceIdx)
+		defer destroyModule(sourceIdx)
 	}
 
 	var wg sync.WaitGroup
@@ -512,10 +324,10 @@ func main() {
 	findSlice()
 	enableDax()
 
-	go streamToPulse()
+	go streamToPulse(sinkPipe)
 
 	if cfg.TX {
-		go streamFromPulse(stopTx)
+		go streamFromPulse(sourcePipe, stopTx)
 	}
 
 	wg.Wait()
