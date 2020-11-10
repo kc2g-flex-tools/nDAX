@@ -27,7 +27,6 @@ var cfg struct {
 	Source        string
 	DaxCh         string
 	LatencyTarget float64
-	DebugTiming   bool
 	TX            bool
 	Realtime      bool
 	LogLevel      string
@@ -41,7 +40,6 @@ func init() {
 	flag.StringVar(&cfg.Sink, "sink", "flexdax.rx", "PulseAudio sink to send audio to")
 	flag.StringVar(&cfg.Source, "source", "flexdax.tx", "PulseAudio sink to receive from")
 	flag.Float64Var(&cfg.LatencyTarget, "latency", 100, "Target RX latency (ms, higher = less sample rate variation)")
-	flag.BoolVar(&cfg.DebugTiming, "debug-timing", false, "Print debug messages about buffer timing and resampling")
 	flag.BoolVar(&cfg.TX, "tx", true, "Create a TX audio device")
 	flag.BoolVar(&cfg.Realtime, "rt", true, "Attempt to acquire realtime priority")
 	flag.StringVar(&cfg.LogLevel, "log-level", "info", "minimum level of messages to log to console (trace, debug, info, warn, error)")
@@ -241,10 +239,6 @@ func main() {
 	logLevel, err := zerolog.ParseLevel(cfg.LogLevel)
 	if err != nil {
 		log.Fatal().Str("level", cfg.LogLevel).Msg("Unknown log level")
-	}
-
-	if cfg.DebugTiming && logLevel > zerolog.DebugLevel {
-		logLevel = zerolog.DebugLevel
 	}
 
 	zerolog.SetGlobalLevel(logLevel)
