@@ -25,10 +25,12 @@ func propList(kv ...string) string {
 	return out
 }
 
-func createPipeSource(name, desc, icon string) (uint32, *os.File, error) {
+func createPipeSource(name, desc, icon string, latencyMs float64) (uint32, *os.File, error) {
 	var err error
 	var resp proto.LoadModuleReply
 	var file *os.File
+
+	bufferBits := int(48000 * 4 * 1 * latencyMs / 1000)
 
 	tmpFile := "/tmp/nDAX-" + name + ".pipe"
 
@@ -41,6 +43,7 @@ func createPipeSource(name, desc, icon string) (uint32, *os.File, error) {
 				"rate", "48000",
 				"format", "float32be",
 				"channels", "1",
+				"source_properties", fmt.Sprintf("device.buffering.buffer_size=%d", bufferBits),
 			),
 		},
 		&resp,

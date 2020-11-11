@@ -267,7 +267,7 @@ func main() {
 	}
 	defer pcli.Close()
 
-	sinkIdx, sinkPipe, err := createPipeSource(cfg.Sink, "Flex RX", "radio")
+	sinkIdx, sinkPipe, err := createPipeSource(cfg.Sink, "Flex RX", "radio", cfg.LatencyTarget)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Create RX pipe failed")
 	}
