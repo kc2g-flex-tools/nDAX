@@ -47,7 +47,6 @@ func init() {
 
 var fc *flexclient.FlexClient
 var pc *pulse.Client
-var pcli *PulseCLI
 var ClientID string
 var ClientUUID string
 var SliceIdx string
@@ -255,17 +254,6 @@ func main() {
 	if err != nil {
 		log.Fatal().Err(err).Msg("pulse.NewClient failed")
 	}
-
-	err = ensureCLI()
-	if err != nil {
-		log.Fatal().Err(err).Msg("Ensuring Pulse CLI failed")
-	}
-
-	pcli, err = NewPulseCLI()
-	if err != nil {
-		log.Fatal().Err(err).Msg("NewPulseCLI failed")
-	}
-	defer pcli.Close()
 
 	sinkIdx, sinkPipe, err := createPipeSource(cfg.Sink, "Flex RX", "radio", cfg.LatencyTarget)
 	if err != nil {

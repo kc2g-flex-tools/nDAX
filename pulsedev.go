@@ -43,7 +43,7 @@ func createPipeSource(name, desc, icon string, latencyMs float64) (uint32, *os.F
 				"rate", "48000",
 				"format", "float32be",
 				"channels", "1",
-				"source_properties", fmt.Sprintf("device.buffering.buffer_size=%d", bufferBits),
+				"source_properties", fmt.Sprintf("device.buffering.buffer_size=%d device.icon_name=%s device.description='%s'", bufferBits, icon, desc),
 			),
 		},
 		&resp,
@@ -52,11 +52,6 @@ func createPipeSource(name, desc, icon string, latencyMs float64) (uint32, *os.F
 	if err != nil {
 		return 0, nil, fmt.Errorf("load-module module-pipe-source: %w", err)
 	}
-
-	pcli.Send("update-source-proplist " + name + " " + propList(
-		"device.description", desc,
-		"device.icon_name", icon,
-	))
 
 	if file, err = os.OpenFile(tmpFile, os.O_RDWR, 0755); err != nil {
 		destroyModule(resp.ModuleIndex)
@@ -83,6 +78,7 @@ func createPipeSink(name, desc, icon string) (uint32, *os.File, error) {
 				"format", "float32be",
 				"channels", "1",
 				"use_system_clock_for_timing", "yes",
+				"sink_properties", fmt.Sprintf("device.icon_name=%s device.description='%s'", icon, desc),
 			),
 		},
 		&resp,
@@ -91,11 +87,6 @@ func createPipeSink(name, desc, icon string) (uint32, *os.File, error) {
 	if err != nil {
 		return 0, nil, fmt.Errorf("load-module module-pipe-sink: %w", err)
 	}
-
-	pcli.Send("update-sink-proplist " + name + " " + propList(
-		"device.description", desc,
-		"device.icon_name", icon,
-	))
 
 	if file, err = os.OpenFile(tmpFile, os.O_RDONLY, 0755); err != nil {
 		destroyModule(resp.ModuleIndex)
@@ -127,30 +118,4 @@ func getModules() ([]*proto.GetModuleInfoReply, error) {
 	} else {
 		return []*proto.GetModuleInfoReply(ret), nil
 	}
-}
-
-func ensureCLI() error {
-	modules, err := getModules()
-	if err != nil {
-		return fmt.Errorf("get pulse module list: %w", err)
-	}
-
-	for _, module := range modules {
-		if module.ModuleName == "module-cli-protocol-unix" {
-			return nil // already loaded
-		}
-	}
-
-	err = pc.RawRequest(
-		&proto.LoadModule{
-			Name: "module-cli-protocol-unix",
-			Args: "",
-		},
-		nil,
-	)
-
-	if err != nil {
-		return fmt.Errorf("loadmodule module-cli-protocol-unix: %w", err)
-	}
-	return nil
 }
