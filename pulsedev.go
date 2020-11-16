@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/jfreymuth/pulse/proto"
@@ -24,36 +25,78 @@ func propList(kv ...string) string {
 	return out
 }
 
-func createLoopback(sinkName, desc, icon, monitorDesc, monitorIcon string) (uint32, error) {
+func createPipeSource(name, desc, icon string, latencyMs float64) (uint32, *os.File, error) {
 	var err error
 	var resp proto.LoadModuleReply
+	var file *os.File
+
+	bufferBits := int(48000 * 4 * 1 * latencyMs / 1000)
+
+	tmpFile := "/tmp/nDAX-" + name + ".pipe"
 
 	err = pc.RawRequest(
 		&proto.LoadModule{
-			Name: "module-null-sink",
-			Args: propList("sink_name", sinkName, "rate", "48000", "format", "float32be"),
+			Name: "module-pipe-source",
+			Args: propList(
+				"source_name", name,
+				"file", tmpFile,
+				"rate", "48000",
+				"format", "float32be",
+				"channels", "1",
+				"source_properties", fmt.Sprintf("device.buffering.buffer_size=%d device.icon_name=%s device.description='%s'", bufferBits, icon, desc),
+			),
 		},
 		&resp,
 	)
 
 	if err != nil {
-		return 0, fmt.Errorf("load-module module-null-sink: %w", err)
+		return 0, nil, fmt.Errorf("load-module module-pipe-source: %w", err)
 	}
 
-	pcli.Send("update-sink-proplist " + sinkName + " " + propList(
-		"device.description", desc,
-		"device.icon_name", icon,
-	))
+	if file, err = os.OpenFile(tmpFile, os.O_RDWR, 0755); err != nil {
+		destroyModule(resp.ModuleIndex)
+		return 0, nil, fmt.Errorf("OpenFile %s: %w", tmpFile, err)
+	}
 
-	pcli.Send("update-source-proplist " + sinkName + ".monitor " + propList(
-		"device.description", monitorDesc,
-		"device.icon_name", monitorIcon,
-	))
-
-	return resp.ModuleIndex, nil
+	return resp.ModuleIndex, file, nil
 }
 
-func destroyLoopback(index uint32) error {
+func createPipeSink(name, desc, icon string) (uint32, *os.File, error) {
+	var err error
+	var resp proto.LoadModuleReply
+	var file *os.File
+
+	tmpFile := "/tmp/nDAX-" + name + ".pipe"
+
+	err = pc.RawRequest(
+		&proto.LoadModule{
+			Name: "module-pipe-sink",
+			Args: propList(
+				"sink_name", name,
+				"file", tmpFile,
+				"rate", "48000",
+				"format", "float32be",
+				"channels", "1",
+				"use_system_clock_for_timing", "yes",
+				"sink_properties", fmt.Sprintf("device.icon_name=%s device.description='%s'", icon, desc),
+			),
+		},
+		&resp,
+	)
+
+	if err != nil {
+		return 0, nil, fmt.Errorf("load-module module-pipe-sink: %w", err)
+	}
+
+	if file, err = os.OpenFile(tmpFile, os.O_RDONLY, 0755); err != nil {
+		destroyModule(resp.ModuleIndex)
+		return 0, nil, fmt.Errorf("OpenFile %s: %w", tmpFile, err)
+	}
+
+	return resp.ModuleIndex, file, nil
+}
+
+func destroyModule(index uint32) error {
 	err := pc.RawRequest(
 		&proto.UnloadModule{
 			ModuleIndex: index,
@@ -75,30 +118,4 @@ func getModules() ([]*proto.GetModuleInfoReply, error) {
 	} else {
 		return []*proto.GetModuleInfoReply(ret), nil
 	}
-}
-
-func ensureCLI() error {
-	modules, err := getModules()
-	if err != nil {
-		return fmt.Errorf("get pulse module list: %w", err)
-	}
-
-	for _, module := range modules {
-		if module.ModuleName == "module-cli-protocol-unix" {
-			return nil // already loaded
-		}
-	}
-
-	err = pc.RawRequest(
-		&proto.LoadModule{
-			Name: "module-cli-protocol-unix",
-			Args: "",
-		},
-		nil,
-	)
-
-	if err != nil {
-		return fmt.Errorf("loadmodule module-cli-protocol-unix: %w", err)
-	}
-	return nil
 }

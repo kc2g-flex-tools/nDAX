@@ -44,8 +44,6 @@ $ ./nDAX -h
 Usage of ./nDAX:
   -daxch string
         DAX channel # to use (default "1")
-  -debug-timing
-        Print debug messages about buffer timing and resampling
   -latency float
         Target RX latency (ms, higher = less sample rate variation) (default 100)
   -radio string
