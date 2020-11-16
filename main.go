@@ -37,8 +37,8 @@ func init() {
 	flag.StringVar(&cfg.Station, "station", "Flex", "station name to bind to")
 	flag.StringVar(&cfg.Slice, "slice", "A", "Slice letter to use")
 	flag.StringVar(&cfg.DaxCh, "daxch", "1", "DAX channel # to use")
-	flag.StringVar(&cfg.Sink, "sink", "flexdax.rx", "PulseAudio sink to send audio to")
-	flag.StringVar(&cfg.Source, "source", "flexdax.tx", "PulseAudio sink to receive from")
+	flag.StringVar(&cfg.Source, "source", "flexdax.rx", "PulseAudio source for received audio")
+	flag.StringVar(&cfg.Sink, "sink", "flexdax.tx", "PulseAudio sink for audio to transmit")
 	flag.Float64Var(&cfg.LatencyTarget, "latency", 100, "Target RX latency (ms, higher = less sample rate variation)")
 	flag.BoolVar(&cfg.TX, "tx", true, "Create a TX audio device")
 	flag.BoolVar(&cfg.Realtime, "rt", true, "Attempt to acquire realtime priority")
@@ -255,21 +255,21 @@ func main() {
 		log.Fatal().Err(err).Msg("pulse.NewClient failed")
 	}
 
-	sinkIdx, sinkPipe, err := createPipeSource(cfg.Sink, "Flex RX", "radio", cfg.LatencyTarget)
+	sourceIdx, sourcePipe, err := createPipeSource(cfg.Source, "Flex RX", "radio", cfg.LatencyTarget)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Create RX pipe failed")
 	}
-	defer destroyModule(sinkIdx)
+	defer destroyModule(sourceIdx)
 
-	var sourceIdx uint32
-	var sourcePipe *os.File
+	var sinkIdx uint32
+	var sinkPipe *os.File
 
 	if cfg.TX {
-		sourceIdx, sourcePipe, err = createPipeSink(cfg.Source, "Flex TX", "radio")
+		sinkIdx, sinkPipe, err = createPipeSink(cfg.Sink, "Flex TX", "radio")
 		if err != nil {
 			log.Fatal().Err(err).Msg("Create TX pipe failed")
 		}
-		defer destroyModule(sourceIdx)
+		defer destroyModule(sinkIdx)
 	}
 
 	var wg sync.WaitGroup
@@ -306,10 +306,10 @@ func main() {
 	findSlice()
 	enableDax()
 
-	go streamToPulse(sinkPipe)
+	go streamToPulse(sourcePipe)
 
 	if cfg.TX {
-		go streamFromPulse(sourcePipe, stopTx)
+		go streamFromPulse(sinkPipe, stopTx)
 	}
 
 	wg.Wait()
