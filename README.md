@@ -28,7 +28,7 @@ nDAX creates a PulseAudio device for your slice, and then connects up the audio 
 ## Getting Started
 
 ```
-$ ./nDAX -station station_name -slice A -daxch 1 -sink flex.sliceA.rx -source flex.sliceA.tx
+$ ./nDAX -station station_name -slice A -daxch 1 -source flex.sliceA.rx -sink flex.sliceA.tx
 ```
 
 ### Installation
@@ -46,16 +46,22 @@ Usage of ./nDAX:
         DAX channel # to use (default "1")
   -latency float
         Target RX latency (ms, higher = less sample rate variation) (default 100)
+  -log-level string
+        minimum level of messages to log to console (trace, debug, info, warn, error) (default "info")
   -radio string
         radio IP address or discovery spec (default ":discover:")
+  -rt
+        Attempt to acquire realtime priority (default true)
   -sink string
-        PulseAudio sink to send audio to (default "flexdax.rx")
+        PulseAudio sink for audio to transmit (default "flexdax.tx")
   -slice string
         Slice letter to use (default "A")
   -source string
-        PulseAudio sink to receive from (default "flexdax.tx")
+        PulseAudio source for received audio (default "flexdax.rx")
   -station string
         station name to bind to (default "Flex")
+  -tx
+        Create a TX audio device (default true)
 ```
 ### Multiple Instances
 
