@@ -30,6 +30,7 @@ var cfg struct {
 	TX            bool
 	Realtime      bool
 	LogLevel      string
+	PacketBuffer  int
 }
 
 func init() {
@@ -43,6 +44,7 @@ func init() {
 	flag.BoolVar(&cfg.TX, "tx", true, "Create a TX audio device")
 	flag.BoolVar(&cfg.Realtime, "rt", true, "Attempt to acquire realtime priority")
 	flag.StringVar(&cfg.LogLevel, "log-level", "info", "minimum level of messages to log to console (trace, debug, info, warn, error)")
+	flag.IntVar(&cfg.PacketBuffer, "packet-buffer", 3, "Buffer n (max 6) packets against reordering and loss")
 }
 
 var fc *flexclient.FlexClient
@@ -137,25 +139,87 @@ func enableDax() {
 	}
 }
 
-var lastPktNum = -1
 var byteReader bytes.Reader
 
-func streamToPulse(pipe *os.File) {
-	vitaPackets := make(chan flexclient.VitaPacket, int(cfg.LatencyTarget*48/256+100))
-	fc.SetVitaChan(vitaPackets)
+func readPacketsBuffered(pktIn chan flexclient.VitaPacket, payloadsOut chan []byte) {
+	var readPoint = -1
+	var buf [16]*flexclient.VitaPacket
+	var ct, reordered, lost int
+	lastPayload := make([]byte, 1024)
 
 	if cfg.Realtime {
 		requestRealtime("rx thread", 19)
 	}
 
+	for pkt := range pktIn {
+		pktNum := int(pkt.Preamble.Header.Packet_count)
+		buf[pktNum] = &pkt
+		if buf[(pktNum+1)%16] != nil {
+			reordered += 1
+		}
+
+		if readPoint == -1 {
+			readPoint = pktNum
+		}
+		ahead := (16 + pktNum - readPoint) % 16
+		for ahead >= cfg.PacketBuffer {
+			if buf[readPoint] != nil {
+				payloadsOut <- buf[readPoint].Payload
+				lastPayload = buf[readPoint].Payload
+				buf[readPoint] = nil
+			} else {
+				lost += 1
+				payloadsOut <- lastPayload
+			}
+			readPoint = (readPoint + 1) % 16
+			ahead = (16 + pktNum - readPoint) % 16
+		}
+
+		ct += 1
+
+		if ct == 187 || ct == 375 {
+			if reordered > 0 || lost > 0 {
+				log.Warn().Int("reordered", reordered).Int("lost", lost).Msg("packet buffer")
+			}
+			reordered, lost = 0, 0
+			if ct == 375 {
+				ct = 0
+			}
+		}
+	}
+	close(payloadsOut)
+}
+
+func readPacketsUnbuffered(pktIn chan flexclient.VitaPacket, payloadsOut chan []byte) {
+	if cfg.Realtime {
+		requestRealtime("rx thread", 19)
+	}
+
+	for pkt := range pktIn {
+		payloadsOut <- pkt.Payload
+	}
+	close(payloadsOut)
+}
+
+func streamToPulse(pipe *os.File) {
+	vitaPackets := make(chan flexclient.VitaPacket, int(cfg.LatencyTarget*48/256+100))
+	fc.SetVitaChan(vitaPackets)
+	payloads := make(chan []byte)
+
+	if cfg.PacketBuffer > 0 {
+		go readPacketsBuffered(vitaPackets, payloads)
+	} else {
+		go readPacketsUnbuffered(vitaPackets, payloads)
+	}
+
 	for {
 		select {
-		case pkt, ok := <-vitaPackets:
+		case payload, ok := <-payloads:
 			if !ok {
 				pipe.Close()
 				return
 			}
-			_, err := pipe.Write(pkt.Payload)
+			_, err := pipe.Write(payload)
 			if err != nil {
 				log.Warn().Err(err).Msg("pipe write")
 			}
@@ -241,6 +305,10 @@ func main() {
 	}
 
 	zerolog.SetGlobalLevel(logLevel)
+
+	if cfg.PacketBuffer < 0 || cfg.PacketBuffer > 14 {
+		log.Fatal().Msgf("-packet-buffer must be between 0 and 14")
+	}
 
 	fc, err = flexclient.NewFlexClient(cfg.RadioIP)
 	if err != nil {
