@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -201,7 +202,7 @@ func readPacketsUnbuffered(pktIn chan flexclient.VitaPacket, payloadsOut chan []
 	close(payloadsOut)
 }
 
-func streamToPulse(pipe *os.File) {
+func streamToPulse(source *PulseSource) {
 	vitaPackets := make(chan flexclient.VitaPacket, int(cfg.LatencyTarget*48/256+100))
 	fc.SetVitaChan(vitaPackets)
 	payloads := make(chan []byte)
@@ -216,11 +217,13 @@ func streamToPulse(pipe *os.File) {
 		select {
 		case payload, ok := <-payloads:
 			if !ok {
-				pipe.Close()
+				source.Close()
 				return
 			}
-			_, err := pipe.Write(payload)
-			if err != nil {
+			_, err := source.Handle.Write(payload)
+			if errors.Is(err, os.ErrClosed) {
+				return
+			} else if err != nil {
 				log.Warn().Err(err).Msg("pipe write")
 			}
 		}
@@ -236,7 +239,7 @@ func allZero(buf []byte) bool {
 	return true
 }
 
-func streamFromPulse(pipe *os.File, exit chan struct{}) {
+func streamFromPulse(sink *PulseSink, exit chan struct{}) {
 	tmp, err := strconv.ParseUint(TXStreamID, 16, 32)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Parse TXStreamID failed")
@@ -257,9 +260,11 @@ func streamFromPulse(pipe *os.File, exit chan struct{}) {
 	var pktCount uint16
 
 	for {
-		n, err := pipe.Read(readBuf[:])
+		n, err := sink.Handle.Read(readBuf[:])
 		if err != nil {
-			log.Error().Err(err).Msg("pipe read")
+			if !errors.Is(err, os.ErrClosed) {
+				log.Error().Err(err).Msg("pipe read")
+			}
 			return
 		}
 		buf.Write(readBuf[:n])
@@ -323,21 +328,20 @@ func main() {
 		log.Fatal().Err(err).Msg("pulse.NewClient failed")
 	}
 
-	sourceIdx, sourcePipe, err := createPipeSource(cfg.Source, "Flex RX", "radio", cfg.LatencyTarget)
+	source, err := createPipeSource(cfg.Source, "Flex RX", "radio", cfg.LatencyTarget)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Create RX pipe failed")
 	}
-	defer destroyModule(sourceIdx)
+	defer source.Close()
 
-	var sinkIdx uint32
-	var sinkPipe *os.File
+	var sink *PulseSink
 
 	if cfg.TX {
-		sinkIdx, sinkPipe, err = createPipeSink(cfg.Sink, "Flex TX", "radio")
+		sink, err = createPipeSink(cfg.Sink, "Flex TX", "radio")
 		if err != nil {
 			log.Fatal().Err(err).Msg("Create TX pipe failed")
 		}
-		defer destroyModule(sinkIdx)
+		defer sink.Close()
 	}
 
 	var wg sync.WaitGroup
@@ -374,10 +378,10 @@ func main() {
 	findSlice()
 	enableDax()
 
-	go streamToPulse(sourcePipe)
+	go streamToPulse(source)
 
 	if cfg.TX {
-		go streamFromPulse(sinkPipe, stopTx)
+		go streamFromPulse(sink, stopTx)
 	}
 
 	wg.Wait()

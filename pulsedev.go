@@ -8,6 +8,16 @@ import (
 	"github.com/jfreymuth/pulse/proto"
 )
 
+type PulseSource struct {
+	Index  uint32
+	Handle *os.File
+}
+
+type PulseSink struct {
+	Index  uint32
+	Handle *os.File
+}
+
 var quoter = strings.NewReplacer(`\`, `\\`, `"`, `\"`)
 
 func quote(val string) string {
@@ -25,7 +35,7 @@ func propList(kv ...string) string {
 	return out
 }
 
-func createPipeSource(name, desc, icon string, latencyMs float64) (uint32, *os.File, error) {
+func createPipeSource(name, desc, icon string, latencyMs float64) (*PulseSource, error) {
 	var err error
 	var resp proto.LoadModuleReply
 	var file *os.File
@@ -50,18 +60,21 @@ func createPipeSource(name, desc, icon string, latencyMs float64) (uint32, *os.F
 	)
 
 	if err != nil {
-		return 0, nil, fmt.Errorf("load-module module-pipe-source: %w", err)
+		return nil, fmt.Errorf("load-module module-pipe-source: %w", err)
 	}
 
 	if file, err = os.OpenFile(tmpFile, os.O_RDWR, 0755); err != nil {
 		destroyModule(resp.ModuleIndex)
-		return 0, nil, fmt.Errorf("OpenFile %s: %w", tmpFile, err)
+		return nil, fmt.Errorf("OpenFile %s: %w", tmpFile, err)
 	}
 
-	return resp.ModuleIndex, file, nil
+	return &PulseSource{
+		Index:  resp.ModuleIndex,
+		Handle: file,
+	}, nil
 }
 
-func createPipeSink(name, desc, icon string) (uint32, *os.File, error) {
+func createPipeSink(name, desc, icon string) (*PulseSink, error) {
 	var err error
 	var resp proto.LoadModuleReply
 	var file *os.File
@@ -85,15 +98,18 @@ func createPipeSink(name, desc, icon string) (uint32, *os.File, error) {
 	)
 
 	if err != nil {
-		return 0, nil, fmt.Errorf("load-module module-pipe-sink: %w", err)
+		return nil, fmt.Errorf("load-module module-pipe-sink: %w", err)
 	}
 
 	if file, err = os.OpenFile(tmpFile, os.O_RDONLY, 0755); err != nil {
 		destroyModule(resp.ModuleIndex)
-		return 0, nil, fmt.Errorf("OpenFile %s: %w", tmpFile, err)
+		return nil, fmt.Errorf("OpenFile %s: %w", tmpFile, err)
 	}
 
-	return resp.ModuleIndex, file, nil
+	return &PulseSink{
+		Index:  resp.ModuleIndex,
+		Handle: file,
+	}, nil
 }
 
 func destroyModule(index uint32) error {
@@ -105,6 +121,20 @@ func destroyModule(index uint32) error {
 	)
 
 	return err
+}
+
+func (s *PulseSource) Close() {
+	if s.Handle != nil {
+		s.Handle.Close()
+	}
+	destroyModule(s.Index)
+}
+
+func (s *PulseSink) Close() {
+	if s.Handle != nil {
+		s.Handle.Close()
+	}
+	destroyModule(s.Index)
 }
 
 func getModules() ([]*proto.GetModuleInfoReply, error) {
