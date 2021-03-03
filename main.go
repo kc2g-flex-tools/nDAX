@@ -180,7 +180,7 @@ func readPacketsBuffered(pktIn chan flexclient.VitaPacket, payloadsOut chan []by
 
 		if ct == 187 || ct == 375 {
 			if reordered > 0 || lost > 0 {
-				log.Warn().Int("reordered", reordered).Int("lost", lost).Msg("packet buffer")
+				log.Debug().Int("reordered", reordered).Int("lost", lost).Msg("packet buffer")
 			}
 			reordered, lost = 0, 0
 			if ct == 375 {
