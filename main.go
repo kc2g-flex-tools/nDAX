@@ -328,6 +328,11 @@ func main() {
 		log.Fatal().Err(err).Msg("pulse.NewClient failed")
 	}
 
+	err = checkPulseConflicts()
+	if err != nil {
+		log.Fatal().Err(err).Send()
+	}
+
 	source, err := createPipeSource(cfg.Source, "Flex RX", "radio", cfg.LatencyTarget)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Create RX pipe failed")
