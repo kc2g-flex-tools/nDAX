@@ -7,6 +7,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/hashicorp/go-version"
 	"github.com/jfreymuth/pulse/proto"
 	log "github.com/rs/zerolog/log"
 )
@@ -165,6 +166,27 @@ func processRunning(pid int) (bool, error) {
 	}
 	// Other error is an error.
 	return false, sigErr
+}
+
+func checkPulseVersion() error {
+	var serverInfo proto.GetServerInfoReply
+	err := pc.RawRequest(
+		&proto.GetServerInfo{},
+		&serverInfo,
+	)
+	if err != nil {
+		return err
+	}
+	ver, err := version.NewVersion(serverInfo.PackageVersion)
+	if err != nil {
+		return err
+	}
+	log.Debug().Str("version", ver.String()).Msg("found PulseAudio server version")
+
+	if ver.LessThan(version.Must(version.NewVersion("12.0"))) {
+		return fmt.Errorf("PulseAudio 12.0 or newer is required, server is version %s", serverInfo.PackageVersion)
+	}
+	return nil
 }
 
 func checkPulseConflicts() error {

@@ -328,6 +328,11 @@ func main() {
 		log.Fatal().Err(err).Msg("pulse.NewClient failed")
 	}
 
+	err = checkPulseVersion()
+	if err != nil {
+		log.Fatal().Err(err).Send()
+	}
+
 	err = checkPulseConflicts()
 	if err != nil {
 		log.Fatal().Err(err).Send()
