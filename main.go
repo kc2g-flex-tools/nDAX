@@ -22,6 +22,7 @@ import (
 
 var cfg struct {
 	RadioIP       string
+	UDPPort       int
 	Station       string
 	Slice         string
 	Sink          string
@@ -36,6 +37,7 @@ var cfg struct {
 
 func init() {
 	flag.StringVar(&cfg.RadioIP, "radio", ":discover:", "radio IP address or discovery spec")
+	flag.IntVar(&cfg.UDPPort, "udp-port", 0, "udp port to listen for VITA packets (0: random free port)")
 	flag.StringVar(&cfg.Station, "station", "Flex", "station name to bind to")
 	flag.StringVar(&cfg.Slice, "slice", "A", "Slice letter to use")
 	flag.StringVar(&cfg.DaxCh, "daxch", "1", "DAX channel # to use")
@@ -371,6 +373,10 @@ func main() {
 		log.Info().Msg("Exit on SIGINT")
 		fc.Close()
 	}()
+
+	if cfg.UDPPort != 0 {
+		fc.SetUDPPort(cfg.UDPPort)
+	}
 
 	err = fc.InitUDP()
 	if err != nil {

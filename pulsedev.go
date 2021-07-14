@@ -223,7 +223,7 @@ func checkPulseConflicts() error {
 				Uint32("module_index", source.ModuleIndex).
 				Msgf("source %s exists but was created by an nDAX process that no longer appears to be running. Will try to unload...", cfg.Source)
 
-			err = pc.RawRequest(&proto.UnloadModule{source.ModuleIndex}, nil)
+			err = pc.RawRequest(&proto.UnloadModule{ModuleIndex: source.ModuleIndex}, nil)
 			if err != nil {
 				return fmt.Errorf("unloading module %d failed", source.ModuleIndex)
 			}
@@ -260,7 +260,7 @@ func checkPulseConflicts() error {
 				Uint32("module_index", sink.ModuleIndex).
 				Msgf("sink %s exists but was created by an nDAX process that no longer appears to be running. Will try to unload...", cfg.Sink)
 
-			err = pc.RawRequest(&proto.UnloadModule{sink.ModuleIndex}, nil)
+			err = pc.RawRequest(&proto.UnloadModule{ModuleIndex: sink.ModuleIndex}, nil)
 			if err != nil {
 				return fmt.Errorf("unloading module %d failed", sink.ModuleIndex)
 			}
