@@ -215,19 +215,14 @@ func streamToPulse(source *PulseSource) {
 		go readPacketsUnbuffered(vitaPackets, payloads)
 	}
 
-	for {
-		select {
-		case payload, ok := <-payloads:
-			if !ok {
-				source.Close()
-				return
-			}
-			_, err := source.Handle.Write(payload)
-			if errors.Is(err, os.ErrClosed) {
-				return
-			} else if err != nil {
-				log.Warn().Err(err).Msg("pipe write")
-			}
+	defer source.Close()
+
+	for payload := range payloads {
+		_, err := source.Handle.Write(payload)
+		if errors.Is(err, os.ErrClosed) {
+			return
+		} else if err != nil {
+			log.Warn().Err(err).Msg("pipe write")
 		}
 	}
 }
