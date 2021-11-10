@@ -78,13 +78,17 @@ func createPipeSource(name, desc, icon string, latencyMs float64) (*PulseSource,
 	}, nil
 }
 
-func createPipeSink(name, desc, icon string) (*PulseSink, error) {
+func createPipeSink(name, desc, icon string, channel int) (*PulseSink, error) {
 	var err error
 	var resp proto.LoadModuleReply
 	var file *os.File
 
 	tmpFile := "/tmp/nDAX-" + name + ".pipe"
 
+	channels := "1"
+	if channel != 0 {
+		channels = "2"
+	}
 	err = pc.RawRequest(
 		&proto.LoadModule{
 			Name: "module-pipe-sink",
@@ -93,7 +97,7 @@ func createPipeSink(name, desc, icon string) (*PulseSink, error) {
 				"file", tmpFile,
 				"rate", "48000",
 				"format", "float32be",
-				"channels", "1",
+				"channels", channels,
 				"use_system_clock_for_timing", "yes",
 				"sink_properties", fmt.Sprintf("device.icon_name=%s device.description='%s' nDAX.pid=%d", icon, desc, os.Getpid()),
 			),

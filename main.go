@@ -30,6 +30,7 @@ var cfg struct {
 	DaxCh         string
 	LatencyTarget float64
 	TX            bool
+	TXChannel     string
 	Realtime      bool
 	LogLevel      string
 	PacketBuffer  int
@@ -45,6 +46,7 @@ func init() {
 	flag.StringVar(&cfg.Sink, "sink", "flexdax.tx", "PulseAudio sink for audio to transmit")
 	flag.Float64Var(&cfg.LatencyTarget, "latency", 100, "Target RX latency (ms, higher = less sample rate variation)")
 	flag.BoolVar(&cfg.TX, "tx", true, "Create a TX audio device")
+	flag.StringVar(&cfg.TXChannel, "tx-channel", "mono", "audio channel to use for tx (mono: create a mono device; left, right: create a stereo device and use one channel)")
 	flag.BoolVar(&cfg.Realtime, "rt", true, "Attempt to acquire realtime priority")
 	flag.StringVar(&cfg.LogLevel, "log-level", "info", "minimum level of messages to log to console (trace, debug, info, warn, error)")
 	flag.IntVar(&cfg.PacketBuffer, "packet-buffer", 3, "Buffer n (max 6) packets against reordering and loss")
@@ -236,7 +238,7 @@ func allZero(buf []byte) bool {
 	return true
 }
 
-func streamFromPulse(sink *PulseSink, exit chan struct{}) {
+func streamFromPulse(sink *PulseSink, exit chan struct{}, channel int) {
 	tmp, err := strconv.ParseUint(TXStreamID, 16, 32)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Parse TXStreamID failed")
@@ -245,10 +247,14 @@ func streamFromPulse(sink *PulseSink, exit chan struct{}) {
 	StreamIDInt := uint32(tmp)
 
 	const pktSize = 256 * 4
+	var readSize = pktSize
+	if channel != 0 {
+		readSize *= 2
+	}
 
-	buf := ringbuffer.New(20 * pktSize)
+	buf := ringbuffer.New(20 * readSize)
 
-	var readBuf [pktSize]byte
+	var readBuf [pktSize * 2]byte
 
 	if cfg.Realtime {
 		requestRealtime("tx thread", 19)
@@ -257,7 +263,7 @@ func streamFromPulse(sink *PulseSink, exit chan struct{}) {
 	var pktCount uint16
 
 	for {
-		n, err := sink.Handle.Read(readBuf[:])
+		n, err := sink.Handle.Read(readBuf[:readSize])
 		if err != nil {
 			if !errors.Is(err, os.ErrClosed) {
 				log.Error().Err(err).Msg("pipe read")
@@ -266,13 +272,26 @@ func streamFromPulse(sink *PulseSink, exit chan struct{}) {
 		}
 		buf.Write(readBuf[:n])
 
-		for buf.Length() >= pktSize {
-			var rawSamples [pktSize]byte
-			buf.Read(rawSamples[:])
+		for buf.Length() >= readSize {
+			var rawSamples [pktSize * 2]byte
+			buf.Read(rawSamples[:readSize])
 
-			if allZero(rawSamples[:]) {
+			if allZero(rawSamples[:readSize]) {
 				pktCount += 1
 				continue
+			}
+
+			if channel != 0 {
+				writePos := 0
+				readPos := 0
+				if channel == 2 {
+					readPos = 4
+				}
+				for readPos < readSize {
+					copy(rawSamples[writePos:writePos+4], rawSamples[readPos:readPos+4])
+					writePos += 4
+					readPos += 8
+				}
 			}
 
 			var pkt bytes.Buffer
@@ -285,7 +304,7 @@ func streamFromPulse(sink *PulseSink, exit chan struct{}) {
 			binary.Write(&pkt, binary.BigEndian, uint32(0x00000000))
 			binary.Write(&pkt, binary.BigEndian, uint32(0x00000000))
 			binary.Write(&pkt, binary.BigEndian, uint32(0x00000000))
-			pkt.Write(rawSamples[:])
+			pkt.Write(rawSamples[:pktSize])
 			fc.SendUdp(pkt.Bytes())
 			time.Sleep(1 * time.Millisecond)
 		}
@@ -342,9 +361,20 @@ func main() {
 	defer source.Close()
 
 	var sink *PulseSink
+	var txchannel int
 
 	if cfg.TX {
-		sink, err = createPipeSink(cfg.Sink, fmt.Sprintf("%s slice %s TX", cfg.Station, cfg.Slice), "radio")
+		switch cfg.TXChannel {
+		case "left":
+			txchannel = 1
+		case "right":
+			txchannel = 2
+		case "mono":
+			txchannel = 0
+		default:
+			log.Fatal().Msg("-tx-channel must be left, right, or mono")
+		}
+		sink, err = createPipeSink(cfg.Sink, fmt.Sprintf("%s slice %s TX", cfg.Station, cfg.Slice), "radio", txchannel)
 		if err != nil {
 			log.Fatal().Err(err).Msg("Create TX pipe failed")
 		}
@@ -392,7 +422,7 @@ func main() {
 	go streamToPulse(source)
 
 	if cfg.TX {
-		go streamFromPulse(sink, stopTx)
+		go streamFromPulse(sink, stopTx, txchannel)
 	}
 
 	wg.Wait()
