@@ -8,6 +8,8 @@ github.com/hb9fxq/flexlib-go v0.0.0-20201121202105-f704c45da456 h1:+m6Ryeox+KV7t
 github.com/hb9fxq/flexlib-go v0.0.0-20201121202105-f704c45da456/go.mod h1:MI57yfZqrJ80yBJxa08A2K6lZg8ePT4Q+zfI2ifqDio=
 github.com/jfreymuth/pulse v0.0.0-20200817093420-a82ccdb5e8aa h1:qUZIj5+D3UDgfshNe8Cz/9maOxe8ddt43qwQH9vEEC8=
 github.com/jfreymuth/pulse v0.0.0-20200817093420-a82ccdb5e8aa/go.mod h1:cpYspI6YljhkUf1WLXLLDmeaaPFc3CnGLjDZf9dZ4no=
+github.com/jfreymuth/pulse v0.1.1-0.20210727160034-392febcff724 h1:BtFEHYuLN5tmBiHSuvlAwKYV1kWoTN6o/POFi1sbzBs=
+github.com/jfreymuth/pulse v0.1.1-0.20210727160034-392febcff724/go.mod h1:cpYspI6YljhkUf1WLXLLDmeaaPFc3CnGLjDZf9dZ4no=
 github.com/kc2g-flex-tools/flexclient v0.1.0 h1:X1wYhHSTSykV6bzR6qxTvMxDnUgntgtXiAZ+U3ZD9jU=
 github.com/kc2g-flex-tools/flexclient v0.1.0/go.mod h1:xNkxFBry2vKlXtCess2Cpayri0kqeg9SATi4fs6WxBA=
 github.com/pkg/errors v0.8.1/go.mod h1:bwawxfHBFNV+L2hUp1rHADufV3IMtnDRdf1r5NINEl0=

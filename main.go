@@ -335,7 +335,7 @@ func main() {
 		log.Fatal().Err(err).Send()
 	}
 
-	source, err := createPipeSource(cfg.Source, "Flex RX", "radio", cfg.LatencyTarget)
+	source, err := createPipeSource(cfg.Source, fmt.Sprintf("%s slice %s RX", cfg.Station, cfg.Slice), "radio", cfg.LatencyTarget)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Create RX pipe failed")
 	}
@@ -344,7 +344,7 @@ func main() {
 	var sink *PulseSink
 
 	if cfg.TX {
-		sink, err = createPipeSink(cfg.Sink, "Flex TX", "radio")
+		sink, err = createPipeSink(cfg.Sink, fmt.Sprintf("%s slice %s TX", cfg.Station, cfg.Slice), "radio")
 		if err != nil {
 			log.Fatal().Err(err).Msg("Create TX pipe failed")
 		}
