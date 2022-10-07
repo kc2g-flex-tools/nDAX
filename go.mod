@@ -1,6 +1,6 @@
 module github.com/kc2g-flex-tools/nDAX
 
-go 1.13
+go 1.17
 
 require (
 	github.com/godbus/dbus v4.1.0+incompatible
@@ -11,3 +11,5 @@ require (
 	github.com/smallnest/ringbuffer v0.0.0-20200331140504-3a38e8060b89
 	golang.org/x/sys v0.0.0-20221006211917-84dc82d7e875
 )
+
+require github.com/hb9fxq/flexlib-go v0.0.0-20201121202105-f704c45da456 // indirect
