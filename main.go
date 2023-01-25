@@ -34,6 +34,15 @@ var cfg struct {
 	Realtime      bool
 	LogLevel      string
 	PacketBuffer  int
+	HighBandwidth bool
+}
+
+var audioCfg struct {
+	sampleRate       int
+	samplesPerPacket int
+	format           string
+	bytesPerSample   int
+	streamClass      uint64
 }
 
 func init() {
@@ -50,6 +59,7 @@ func init() {
 	flag.BoolVar(&cfg.Realtime, "rt", true, "Attempt to acquire realtime priority")
 	flag.StringVar(&cfg.LogLevel, "log-level", "info", "minimum level of messages to log to console (trace, debug, info, warn, error)")
 	flag.IntVar(&cfg.PacketBuffer, "packet-buffer", 3, "Buffer n (max 6) packets against reordering and loss")
+	flag.BoolVar(&cfg.HighBandwidth, "high-bw", false, "Use high-bandwidth DAX transport (48kHz float32, 4x bandwidth)")
 }
 
 var fc *flexclient.FlexClient
@@ -114,6 +124,10 @@ func findSlice() {
 }
 
 func enableDax() {
+	if !cfg.HighBandwidth {
+		fc.SendAndWait("client set send_reduced_bw_dax=true")
+	}
+
 	fc.SliceSet(SliceIdx, flexclient.Object{"dax": cfg.DaxCh})
 
 	cmd := "dax audio set " + cfg.DaxCh + " slice=" + SliceIdx
@@ -207,7 +221,7 @@ func readPacketsUnbuffered(pktIn chan flexclient.VitaPacket, payloadsOut chan []
 }
 
 func streamToPulse(source *PulseSource) {
-	vitaPackets := make(chan flexclient.VitaPacket, int(cfg.LatencyTarget*48/256+100))
+	vitaPackets := make(chan flexclient.VitaPacket, int(cfg.LatencyTarget*48/float64(audioCfg.samplesPerPacket)+100))
 	fc.SetVitaChan(vitaPackets)
 	payloads := make(chan []byte)
 
@@ -246,7 +260,7 @@ func streamFromPulse(sink *PulseSink, exit chan struct{}, channel int) {
 
 	StreamIDInt := uint32(tmp)
 
-	const pktSize = 256 * 4
+	pktSize := audioCfg.samplesPerPacket * audioCfg.bytesPerSample
 	var readSize = pktSize
 	if channel != 0 {
 		readSize *= 2
@@ -254,7 +268,8 @@ func streamFromPulse(sink *PulseSink, exit chan struct{}, channel int) {
 
 	buf := ringbuffer.New(20 * readSize)
 
-	var readBuf [pktSize * 2]byte
+	readBuf := make([]byte, pktSize*2)
+	rawSamples := make([]byte, pktSize*2)
 
 	if cfg.Realtime {
 		requestRealtime("tx thread", 19)
@@ -273,7 +288,6 @@ func streamFromPulse(sink *PulseSink, exit chan struct{}, channel int) {
 		buf.Write(readBuf[:n])
 
 		for buf.Length() >= readSize {
-			var rawSamples [pktSize * 2]byte
 			buf.Read(rawSamples[:readSize])
 
 			if allZero(rawSamples[:readSize]) {
@@ -285,12 +299,12 @@ func streamFromPulse(sink *PulseSink, exit chan struct{}, channel int) {
 				writePos := 0
 				readPos := 0
 				if channel == 2 {
-					readPos = 4
+					readPos = audioCfg.bytesPerSample
 				}
 				for readPos < readSize {
-					copy(rawSamples[writePos:writePos+4], rawSamples[readPos:readPos+4])
-					writePos += 4
-					readPos += 8
+					copy(rawSamples[writePos:writePos+audioCfg.bytesPerSample], rawSamples[readPos:readPos+audioCfg.bytesPerSample])
+					writePos += audioCfg.bytesPerSample
+					readPos += 2 * audioCfg.bytesPerSample
 				}
 			}
 
@@ -300,7 +314,7 @@ func streamFromPulse(sink *PulseSink, exit chan struct{}, channel int) {
 			pktCount += 1
 			binary.Write(&pkt, binary.BigEndian, uint16(pktSize/4+7))
 			binary.Write(&pkt, binary.BigEndian, StreamIDInt)
-			binary.Write(&pkt, binary.BigEndian, uint64(0x00001c2d534c03e3))
+			binary.Write(&pkt, binary.BigEndian, audioCfg.streamClass)
 			binary.Write(&pkt, binary.BigEndian, uint32(0x00000000))
 			binary.Write(&pkt, binary.BigEndian, uint32(0x00000000))
 			binary.Write(&pkt, binary.BigEndian, uint32(0x00000000))
@@ -319,6 +333,20 @@ func main() {
 	).With().Timestamp().Logger()
 
 	flag.Parse()
+
+	if cfg.HighBandwidth {
+		audioCfg.sampleRate = 48000
+		audioCfg.samplesPerPacket = 256
+		audioCfg.bytesPerSample = 4
+		audioCfg.format = "float32be"
+		audioCfg.streamClass = 0x00001c2d534c03e3
+	} else {
+		audioCfg.sampleRate = 24000
+		audioCfg.samplesPerPacket = 128
+		audioCfg.bytesPerSample = 2
+		audioCfg.format = "s16be"
+		audioCfg.streamClass = 0x00001c2d534c0123
+	}
 
 	logLevel, err := zerolog.ParseLevel(cfg.LogLevel)
 	if err != nil {

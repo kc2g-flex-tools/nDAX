@@ -44,7 +44,7 @@ func createPipeSource(name, desc, icon string, latencyMs float64) (*PulseSource,
 	var resp proto.LoadModuleReply
 	var file *os.File
 
-	bufferBits := int(48000 * 4 * 1 * latencyMs / 1000)
+	bufferBits := int(float64(audioCfg.sampleRate*audioCfg.bytesPerSample) * latencyMs / 1000)
 
 	tmpFile := "/tmp/nDAX-" + name + ".pipe"
 
@@ -54,8 +54,8 @@ func createPipeSource(name, desc, icon string, latencyMs float64) (*PulseSource,
 			Args: propList(
 				"source_name", name,
 				"file", tmpFile,
-				"rate", "48000",
-				"format", "float32be",
+				"rate", fmt.Sprintf("%d", audioCfg.sampleRate),
+				"format", audioCfg.format,
 				"channels", "1",
 				"source_properties", fmt.Sprintf("device.buffering.buffer_size=%d device.icon_name=%s device.description='%s' nDAX.pid=%d", bufferBits, icon, desc, os.Getpid()),
 			),
@@ -95,8 +95,8 @@ func createPipeSink(name, desc, icon string, channel int) (*PulseSink, error) {
 			Args: propList(
 				"sink_name", name,
 				"file", tmpFile,
-				"rate", "48000",
-				"format", "float32be",
+				"rate", fmt.Sprintf("%d", audioCfg.sampleRate),
+				"format", audioCfg.format,
 				"channels", channels,
 				"use_system_clock_for_timing", "yes",
 				"sink_properties", fmt.Sprintf("device.icon_name=%s device.description='%s' nDAX.pid=%d", icon, desc, os.Getpid()),
