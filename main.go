@@ -35,6 +35,7 @@ var cfg struct {
 	LogLevel      string
 	PacketBuffer  int
 	HighBandwidth bool
+	Gain          int
 }
 
 var audioCfg struct {
@@ -60,6 +61,7 @@ func init() {
 	flag.StringVar(&cfg.LogLevel, "log-level", "info", "minimum level of messages to log to console (trace, debug, info, warn, error)")
 	flag.IntVar(&cfg.PacketBuffer, "packet-buffer", 3, "Buffer n (max 6) packets against reordering and loss")
 	flag.BoolVar(&cfg.HighBandwidth, "high-bw", false, "Use high-bandwidth DAX transport (48kHz float32, 4x bandwidth)")
+	flag.IntVar(&cfg.Gain, "gain", 50, "DAX gain setting (0-100)")
 }
 
 var fc *flexclient.FlexClient
@@ -145,7 +147,7 @@ func enableDax() {
 	RXStreamID = res.Message
 	log.Info().Str("stream_id", RXStreamID).Msg("Enabled RX DAX stream")
 
-	fc.SendAndWait(fmt.Sprintf("audio stream 0x%s slice %s gain %d", RXStreamID, SliceIdx, 50))
+	fc.SendAndWait(fmt.Sprintf("audio stream 0x%s slice %s gain %d", RXStreamID, SliceIdx, cfg.Gain))
 
 	if cfg.TX {
 		res = fc.SendAndWait("stream create type=dax_tx" + cfg.DaxCh)
@@ -357,6 +359,10 @@ func main() {
 
 	if cfg.PacketBuffer < 0 || cfg.PacketBuffer > 14 {
 		log.Fatal().Msgf("-packet-buffer must be between 0 and 14")
+	}
+
+	if cfg.Gain < 0 || cfg.Gain > 100 {
+		log.Fatal().Msg("-gain must be between 0 and 100")
 	}
 
 	fc, err = flexclient.NewFlexClient(cfg.RadioIP)
