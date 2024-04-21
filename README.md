@@ -84,6 +84,23 @@ To setup WSJT-X with nCAT and hamlib, use the following settings:
 
 ![WSJT-X Setup](https://raw.githubusercontent.com/kc2g-flex-tools/nDAX/master/docs/wsjtx_audio.png)
 
+### Using with fldigi
+
+fldigi's audio setup doesn't know how to select different PulseAudio devices. To make things work, you will need an
+audio mixer program that has the ability to assign different audio devices to different programs. Many Linux
+desktop environments have such a program built-in, but if you're not sure about yours, `pavucontrol` is a good choice.
+
+1. Start nDAX.
+2. Start fldigi.
+3. Open the config dialog ("Configure" → "Config Dialog).
+4. Under "Soundcard" → "Devices", select the "PulseAudio" checkbox, and leave "Server string" blank. Save and close.
+5. Open pavucontrol and go to the Playback tab.
+6. Find the entry with the fldigi icon (fldigi doesn't set its name properly, so the place where the name appears is
+   blank!) and use the dropdown to change its device to "Flex Slice A TX", or whatever nDAX device you wish to use.
+7. On the Recording tab, find fldigi and change the device to "Flex Slice A RX", or similar.
+8. You can now exit pavucontrol and start using fldigi. PulseAudio automatically remembers the device assignments, so as
+   long as nDAX is running when you start fldigi in the future, it will automatically use the nDAX devices.
+
 <!-- ROADMAP -->
 ## Roadmap
 
