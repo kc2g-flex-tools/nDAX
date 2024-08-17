@@ -2,12 +2,14 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
 	"syscall"
 
 	"github.com/hashicorp/go-version"
+	"github.com/jfreymuth/pulse"
 	"github.com/jfreymuth/pulse/proto"
 	log "github.com/rs/zerolog/log"
 )
@@ -15,11 +17,13 @@ import (
 type PulseSource struct {
 	Index  uint32
 	Handle *os.File
+	Name   string
 }
 
 type PulseSink struct {
 	Index  uint32
 	Handle *os.File
+	Name   string
 }
 
 var quoter = strings.NewReplacer(`\`, `\\`, `"`, `\"`)
@@ -75,6 +79,7 @@ func createPipeSource(name, desc, icon string, latencyMs float64) (*PulseSource,
 	return &PulseSource{
 		Index:  resp.ModuleIndex,
 		Handle: file,
+		Name:   name,
 	}, nil
 }
 
@@ -117,6 +122,7 @@ func createPipeSink(name, desc, icon string, channel int) (*PulseSink, error) {
 	return &PulseSink{
 		Index:  resp.ModuleIndex,
 		Handle: file,
+		Name:   name,
 	}, nil
 }
 
@@ -143,6 +149,24 @@ func (s *PulseSink) Close() {
 		s.Handle.Close()
 	}
 	destroyModule(s.Index)
+}
+
+func (s *PulseSource) Consume() (*pulse.RecordStream, error) {
+	writer := pulse.NewWriter(io.Discard, proto.FormatInt16LE)
+	psource, err := pc.SourceByID(s.Name)
+	if err != nil {
+		return nil, fmt.Errorf("looking up source: %w", err)
+	}
+	rec, err := pc.NewRecord(writer,
+		pulse.RecordSampleRate(audioCfg.sampleRate),
+		pulse.RecordSource(psource),
+		pulse.RecordMediaName("self-consume"),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("creating stream: %w", err)
+	}
+	rec.Start()
+	return rec, nil
 }
 
 func getModules() ([]*proto.GetModuleInfoReply, error) {
@@ -172,25 +196,31 @@ func processRunning(pid int) (bool, error) {
 	return false, sigErr
 }
 
-func checkPulseVersion() error {
+func checkPulseVersion() (error, bool) {
 	var serverInfo proto.GetServerInfoReply
 	err := pc.RawRequest(
 		&proto.GetServerInfo{},
 		&serverInfo,
 	)
+	log.Debug().Interface("serverInfo", serverInfo).Send()
 	if err != nil {
-		return err
+		return err, false
 	}
 	ver, err := version.NewVersion(serverInfo.PackageVersion)
 	if err != nil {
-		return err
+		return err, false
 	}
 	log.Debug().Str("version", ver.String()).Msg("found PulseAudio server version")
 
 	if ver.LessThan(version.Must(version.NewVersion("12.0"))) {
-		return fmt.Errorf("PulseAudio 12.0 or newer is required, server is version %s", serverInfo.PackageVersion)
+		return fmt.Errorf("PulseAudio 12.0 or newer is required, server is version %s", serverInfo.PackageVersion), false
 	}
-	return nil
+
+	if strings.Contains(serverInfo.PackageName, "PipeWire") {
+		return nil, true
+	} else {
+		return nil, false
+	}
 }
 
 func checkPulseConflicts() error {

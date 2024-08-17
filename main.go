@@ -36,6 +36,7 @@ var cfg struct {
 	PacketBuffer  int
 	HighBandwidth bool
 	Gain          int
+	Consume       string
 }
 
 var audioCfg struct {
@@ -62,6 +63,7 @@ func init() {
 	flag.IntVar(&cfg.PacketBuffer, "packet-buffer", 3, "Buffer n (max 6) packets against reordering and loss")
 	flag.BoolVar(&cfg.HighBandwidth, "high-bw", false, "Use high-bandwidth DAX transport (48kHz float32, 4x bandwidth)")
 	flag.IntVar(&cfg.Gain, "gain", 50, "DAX gain setting (0-100)")
+	flag.StringVar(&cfg.Consume, "consume", "auto", "Consume our own RX stream to work around latency glitches")
 }
 
 var fc *flexclient.FlexClient
@@ -367,6 +369,13 @@ func main() {
 		log.Fatal().Msg("-gain must be between 0 and 100")
 	}
 
+	switch cfg.Consume {
+	case "true", "false", "auto":
+		// ok
+	default:
+		log.Fatal().Msg("-consume must be 'true', 'false', or 'auto'")
+	}
+
 	fc, err = flexclient.NewFlexClient(cfg.RadioIP)
 	if err != nil {
 		log.Fatal().Err(err).Msg("NewFlexClient failed")
@@ -380,7 +389,7 @@ func main() {
 		log.Fatal().Err(err).Msg("pulse.NewClient failed")
 	}
 
-	err = checkPulseVersion()
+	err, wantSelfConsume := checkPulseVersion()
 	if err != nil {
 		log.Fatal().Err(err).Send()
 	}
@@ -395,6 +404,14 @@ func main() {
 		log.Fatal().Err(err).Msg("Create RX pipe failed")
 	}
 	defer source.Close()
+
+	if cfg.Consume == "true" || (cfg.Consume == "auto" && wantSelfConsume) {
+		consumer, err := source.Consume()
+		if err != nil {
+			log.Fatal().Err(err).Msg("Create self-consumer failed")
+		}
+		defer consumer.Close()
+	}
 
 	var sink *PulseSink
 	var txchannel int
