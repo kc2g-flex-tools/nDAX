@@ -169,18 +169,6 @@ func (s *PulseSource) Consume() (*pulse.RecordStream, error) {
 	return rec, nil
 }
 
-func getModules() ([]*proto.GetModuleInfoReply, error) {
-	var ret proto.GetModuleInfoListReply
-	err := pc.RawRequest(
-		&proto.GetModuleInfoList{},
-		&ret,
-	)
-	if err != nil {
-		return nil, err
-	} else {
-		return []*proto.GetModuleInfoReply(ret), nil
-	}
-}
 
 func processRunning(pid int) (bool, error) {
 	sigErr := syscall.Kill(pid, syscall.Signal(0))
@@ -196,7 +184,7 @@ func processRunning(pid int) (bool, error) {
 	return false, sigErr
 }
 
-func checkPulseVersion() (error, bool) {
+func checkPulseVersion() (bool, error) {
 	var serverInfo proto.GetServerInfoReply
 	err := pc.RawRequest(
 		&proto.GetServerInfo{},
@@ -204,22 +192,22 @@ func checkPulseVersion() (error, bool) {
 	)
 	log.Debug().Interface("serverInfo", serverInfo).Send()
 	if err != nil {
-		return err, false
+		return false, err
 	}
 	ver, err := version.NewVersion(serverInfo.PackageVersion)
 	if err != nil {
-		return err, false
+		return false, err
 	}
 	log.Debug().Str("version", ver.String()).Msg("found PulseAudio server version")
 
 	if ver.LessThan(version.Must(version.NewVersion("12.0"))) {
-		return fmt.Errorf("PulseAudio 12.0 or newer is required, server is version %s", serverInfo.PackageVersion), false
+		return false, fmt.Errorf("PulseAudio 12.0 or newer is required, server is version %s", serverInfo.PackageVersion)
 	}
 
 	if strings.Contains(serverInfo.PackageName, "PipeWire") {
-		return nil, true
+		return true, nil
 	} else {
-		return nil, false
+		return false, nil
 	}
 }
 

@@ -78,7 +78,7 @@ func bindClient() {
 	log.Info().Str("station", cfg.Station).Msg("Waiting for station")
 
 	clients := make(chan flexclient.StateUpdate)
-	sub := fc.Subscribe(flexclient.Subscription{"client ", clients})
+	sub := fc.Subscribe(flexclient.Subscription{Prefix: "client ", Updates: clients})
 	cmdResult := fc.SendNotify("sub client all")
 
 	var found, cmdComplete bool
@@ -107,7 +107,7 @@ func bindClient() {
 func findSlice() {
 	log.Info().Str("slice_id", cfg.Slice).Msg("Looking for slice")
 	slices := make(chan flexclient.StateUpdate)
-	sub := fc.Subscribe(flexclient.Subscription{"slice ", slices})
+	sub := fc.Subscribe(flexclient.Subscription{Prefix: "slice ", Updates: slices})
 	cmdResult := fc.SendNotify("sub slice all")
 
 	var found, cmdComplete bool
@@ -258,7 +258,7 @@ func allZero(buf []byte) bool {
 	return true
 }
 
-func streamFromPulse(sink *PulseSink, exit chan struct{}, channel int) {
+func streamFromPulse(sink *PulseSink, channel int) {
 	tmp, err := strconv.ParseUint(TXStreamID, 16, 32)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Parse TXStreamID failed")
@@ -389,7 +389,7 @@ func main() {
 		log.Fatal().Err(err).Msg("pulse.NewClient failed")
 	}
 
-	err, wantSelfConsume := checkPulseVersion()
+	wantSelfConsume, err := checkPulseVersion()
 	if err != nil {
 		log.Fatal().Err(err).Send()
 	}
@@ -475,7 +475,7 @@ func main() {
 	go streamToPulse(source)
 
 	if cfg.TX {
-		go streamFromPulse(sink, stopTx, txchannel)
+		go streamFromPulse(sink, txchannel)
 	}
 
 	wg.Wait()
