@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"flag"
@@ -11,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/jfreymuth/pulse"
@@ -226,7 +228,7 @@ func readPacketsUnbuffered(pktIn chan flexclient.VitaPacket, payloadsOut chan []
 	close(payloadsOut)
 }
 
-func streamToPulse(source *PulseSource) {
+func streamToPulse(ctx context.Context, source *PulseSource) {
 	vitaPackets := make(chan flexclient.VitaPacket, int(cfg.LatencyTarget*48/float64(audioCfg.samplesPerPacket)+100))
 	fc.SetVitaChan(vitaPackets)
 	payloads := make(chan []byte)
@@ -237,14 +239,20 @@ func streamToPulse(source *PulseSource) {
 		go readPacketsUnbuffered(vitaPackets, payloads)
 	}
 
-	defer source.Close()
-
-	for payload := range payloads {
-		_, err := source.Handle.Write(payload)
-		if errors.Is(err, os.ErrClosed) {
+	for {
+		select {
+		case <-ctx.Done():
 			return
-		} else if err != nil {
-			log.Warn().Err(err).Msg("pipe write")
+		case payload, ok := <-payloads:
+			if !ok {
+				return
+			}
+			_, err := source.Handle.Write(payload)
+			if errors.Is(err, os.ErrClosed) {
+				return
+			} else if err != nil {
+				log.Warn().Err(err).Msg("pipe write")
+			}
 		}
 	}
 }
@@ -258,7 +266,7 @@ func allZero(buf []byte) bool {
 	return true
 }
 
-func streamFromPulse(sink *PulseSink, channel int) {
+func streamFromPulse(ctx context.Context, sink *PulseSink, channel int) {
 	tmp, err := strconv.ParseUint(TXStreamID, 16, 32)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Parse TXStreamID failed")
@@ -284,49 +292,54 @@ func streamFromPulse(sink *PulseSink, channel int) {
 	var pktCount uint16
 
 	for {
-		n, err := sink.Handle.Read(readBuf[:readSize])
-		if err != nil {
-			if !errors.Is(err, os.ErrClosed) {
-				log.Error().Err(err).Msg("pipe read")
-			}
+		select {
+		case <-ctx.Done():
 			return
-		}
-		buf.Write(readBuf[:n])
+		default:
+			n, err := sink.Handle.Read(readBuf[:readSize])
+			if err != nil {
+				if !errors.Is(err, os.ErrClosed) {
+					log.Error().Err(err).Msg("pipe read")
+				}
+				return
+			}
+			buf.Write(readBuf[:n])
 
-		for buf.Length() >= readSize {
-			buf.Read(rawSamples[:readSize])
+			for buf.Length() >= readSize {
+				buf.Read(rawSamples[:readSize])
 
-			if allZero(rawSamples[:readSize]) {
+				if allZero(rawSamples[:readSize]) {
+					pktCount += 1
+					continue
+				}
+
+				if channel != 0 {
+					writePos := 0
+					readPos := 0
+					if channel == 2 {
+						readPos = audioCfg.bytesPerSample
+					}
+					for readPos < readSize {
+						copy(rawSamples[writePos:writePos+audioCfg.bytesPerSample], rawSamples[readPos:readPos+audioCfg.bytesPerSample])
+						writePos += audioCfg.bytesPerSample
+						readPos += 2 * audioCfg.bytesPerSample
+					}
+				}
+
+				var pkt bytes.Buffer
+				pkt.WriteByte(0x18)
+				pkt.WriteByte(0xd0 | byte(pktCount&0xf))
 				pktCount += 1
-				continue
+				binary.Write(&pkt, binary.BigEndian, uint16(pktSize/4+7))
+				binary.Write(&pkt, binary.BigEndian, StreamIDInt)
+				binary.Write(&pkt, binary.BigEndian, audioCfg.streamClass)
+				binary.Write(&pkt, binary.BigEndian, uint32(0x00000000))
+				binary.Write(&pkt, binary.BigEndian, uint32(0x00000000))
+				binary.Write(&pkt, binary.BigEndian, uint32(0x00000000))
+				pkt.Write(rawSamples[:pktSize])
+				fc.SendUdp(pkt.Bytes())
+				time.Sleep(1 * time.Millisecond)
 			}
-
-			if channel != 0 {
-				writePos := 0
-				readPos := 0
-				if channel == 2 {
-					readPos = audioCfg.bytesPerSample
-				}
-				for readPos < readSize {
-					copy(rawSamples[writePos:writePos+audioCfg.bytesPerSample], rawSamples[readPos:readPos+audioCfg.bytesPerSample])
-					writePos += audioCfg.bytesPerSample
-					readPos += 2 * audioCfg.bytesPerSample
-				}
-			}
-
-			var pkt bytes.Buffer
-			pkt.WriteByte(0x18)
-			pkt.WriteByte(0xd0 | byte(pktCount&0xf))
-			pktCount += 1
-			binary.Write(&pkt, binary.BigEndian, uint16(pktSize/4+7))
-			binary.Write(&pkt, binary.BigEndian, StreamIDInt)
-			binary.Write(&pkt, binary.BigEndian, audioCfg.streamClass)
-			binary.Write(&pkt, binary.BigEndian, uint32(0x00000000))
-			binary.Write(&pkt, binary.BigEndian, uint32(0x00000000))
-			binary.Write(&pkt, binary.BigEndian, uint32(0x00000000))
-			pkt.Write(rawSamples[:pktSize])
-			fc.SendUdp(pkt.Bytes())
-			time.Sleep(1 * time.Millisecond)
 		}
 	}
 }
@@ -434,22 +447,32 @@ func main() {
 		defer sink.Close()
 	}
 
-	var wg sync.WaitGroup
-	wg.Add(1)
-	stopTx := make(chan struct{})
+	// Create a context that cancels on interrupt
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
+	// Handle interrupt signal
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	var wg sync.WaitGroup
+
+	// Start FlexClient
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		fc.Run()
-		close(stopTx)
-		wg.Done()
+		cancel() // Cancel context when fc.Run() exits
 	}()
 
+	// Handle shutdown signal
 	go func() {
-		c := make(chan os.Signal, 1)
-		signal.Notify(c, os.Interrupt)
-		<-c
-		log.Info().Msg("Exit on SIGINT")
-		fc.Close()
+		select {
+		case <-sigChan:
+			log.Info().Msg("Shutting down on signal")
+			fc.Close()
+		case <-ctx.Done():
+		}
 	}()
 
 	if cfg.UDPPort != 0 {
@@ -461,7 +484,10 @@ func main() {
 		log.Fatal().Err(err).Msg("fc.InitUDP failed")
 	}
 
+	// Start UDP handler
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		if cfg.Realtime {
 			requestRealtime("udp thread", 20)
 		}
@@ -472,11 +498,39 @@ func main() {
 	findSlice()
 	enableDax()
 
-	go streamToPulse(source)
+	// Start RX stream
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		streamToPulse(ctx, source)
+	}()
 
+	// Start TX stream if enabled
 	if cfg.TX {
-		go streamFromPulse(sink, txchannel)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			streamFromPulse(ctx, sink, txchannel)
+		}()
 	}
 
-	wg.Wait()
+	// Wait for context cancellation
+	<-ctx.Done()
+
+	// Give goroutines time to clean up
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cleanupCancel()
+
+	cleanupDone := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(cleanupDone)
+	}()
+
+	select {
+	case <-cleanupDone:
+		log.Info().Msg("Clean shutdown completed")
+	case <-cleanupCtx.Done():
+		log.Warn().Msg("Shutdown timeout exceeded")
+	}
 }
