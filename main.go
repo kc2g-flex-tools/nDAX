@@ -76,7 +76,7 @@ var SliceIdx string
 var RXStreamID string
 var TXStreamID string
 
-func bindClient() {
+func bindClient(ctx context.Context) error {
 	log.Info().Str("station", cfg.Station).Msg("Waiting for station")
 
 	clients := make(chan flexclient.StateUpdate)
@@ -87,6 +87,9 @@ func bindClient() {
 
 	for !(found && cmdComplete) {
 		select {
+		case <-ctx.Done():
+			cmdResult.Close()
+			return ctx.Err()
 		case upd := <-clients:
 			if upd.CurrentState["station"] == cfg.Station {
 				ClientID = strings.TrimPrefix(upd.Object, "client ")
@@ -103,10 +106,11 @@ func bindClient() {
 
 	log.Info().Str("id", ClientID).Str("uuid", ClientUUID).Msg("Found Client")
 
-	fc.SendAndWait("client bind client_id=" + ClientUUID)
+	_, err := fc.SendAndWaitContext(ctx, "client bind client_id="+ClientUUID)
+	return err
 }
 
-func findSlice() {
+func findSlice(ctx context.Context) error {
 	log.Info().Str("slice_id", cfg.Slice).Msg("Looking for slice")
 	slices := make(chan flexclient.StateUpdate)
 	sub := fc.Subscribe(flexclient.Subscription{Prefix: "slice ", Updates: slices})
@@ -116,6 +120,10 @@ func findSlice() {
 
 	for !(found && cmdComplete) {
 		select {
+		case <-ctx.Done():
+			cmdResult.Close()
+			fc.Unsubscribe(sub)
+			return ctx.Err()
 		case upd := <-slices:
 			if upd.CurrentState["index_letter"] == cfg.Slice && upd.CurrentState["client_handle"] == ClientID {
 				SliceIdx = strings.TrimPrefix(upd.Object, "slice ")
@@ -129,11 +137,14 @@ func findSlice() {
 	cmdResult.Close()
 	fc.Unsubscribe(sub)
 	log.Info().Str("slice_idx", SliceIdx).Msg("Found slice")
+	return nil
 }
 
-func enableDax() {
+func enableDax(ctx context.Context) error {
 	if !cfg.HighBandwidth {
-		fc.SendAndWait("client set send_reduced_bw_dax=true")
+		if _, err := fc.SendAndWaitContext(ctx, "client set send_reduced_bw_dax=true"); err != nil {
+			return err
+		}
 	}
 
 	fc.SliceSet(SliceIdx, flexclient.Object{"dax": cfg.DaxCh})
@@ -143,27 +154,38 @@ func enableDax() {
 		cmd += " tx=1"
 	}
 
-	fc.SendAndWait(cmd)
+	if _, err := fc.SendAndWaitContext(ctx, cmd); err != nil {
+		return err
+	}
 
-	res := fc.SendAndWait("stream create type=dax_rx dax_channel=" + cfg.DaxCh)
+	res, err := fc.SendAndWaitContext(ctx, "stream create type=dax_rx dax_channel="+cfg.DaxCh)
+	if err != nil {
+		return err
+	}
 	if res.Error != 0 {
-		log.Fatal().Str("code", fmt.Sprintf("%08X", res.Error)).Str("message", res.Message).Msg("Create dax_rx stream failed")
+		return fmt.Errorf("create dax_rx stream failed: code=%08X message=%s", res.Error, res.Message)
 	}
 
 	RXStreamID = res.Message
 	log.Info().Str("stream_id", RXStreamID).Msg("Enabled RX DAX stream")
 
-	fc.SendAndWait(fmt.Sprintf("audio stream 0x%s slice %s gain %d", RXStreamID, SliceIdx, cfg.Gain))
+	if _, err := fc.SendAndWaitContext(ctx, fmt.Sprintf("audio stream 0x%s slice %s gain %d", RXStreamID, SliceIdx, cfg.Gain)); err != nil {
+		return err
+	}
 
 	if cfg.TX {
-		res = fc.SendAndWait("stream create type=dax_tx" + cfg.DaxCh)
+		res, err = fc.SendAndWaitContext(ctx, "stream create type=dax_tx"+cfg.DaxCh)
+		if err != nil {
+			return err
+		}
 		if res.Error != 0 {
-			log.Fatal().Str("code", fmt.Sprintf("%08X", res.Error)).Str("message", res.Message).Msg("Create dax_tx stream failed")
+			return fmt.Errorf("create dax_tx stream failed: code=%08X message=%s", res.Error, res.Message)
 		}
 
 		TXStreamID = res.Message
 		log.Info().Str("stream_id", TXStreamID).Msg("Enabled TX DAX stream")
 	}
+	return nil
 }
 
 var byteReader bytes.Reader
@@ -444,7 +466,6 @@ func main() {
 		if err != nil {
 			log.Fatal().Err(err).Msg("Create TX pipe failed")
 		}
-		defer sink.Close()
 	}
 
 	// Create a context that cancels on interrupt
@@ -494,9 +515,21 @@ func main() {
 		fc.RunUDP()
 	}()
 
-	bindClient()
-	findSlice()
-	enableDax()
+	// Initialize connection with cancellation support
+	if err := bindClient(ctx); err != nil {
+		log.Error().Err(err).Msg("Failed to bind client")
+		return
+	}
+
+	if err := findSlice(ctx); err != nil {
+		log.Error().Err(err).Msg("Failed to find slice")
+		return
+	}
+
+	if err := enableDax(ctx); err != nil {
+		log.Error().Err(err).Msg("Failed to enable DAX")
+		return
+	}
 
 	// Start RX stream
 	wg.Add(1)
@@ -516,6 +549,10 @@ func main() {
 
 	// Wait for context cancellation
 	<-ctx.Done()
+	fc.Close()
+	if sink != nil {
+		sink.Close()
+	}
 
 	// Give goroutines time to clean up
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
