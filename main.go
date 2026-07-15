@@ -39,6 +39,19 @@ var cfg struct {
 	HighBandwidth bool
 	Gain          int
 	Consume       string
+	Backend       string
+}
+
+// rxDevice is the audio device that received (RX) audio is written to.
+type rxDevice interface {
+	Write(p []byte) (int, error)
+	Close()
+}
+
+// txDevice is the audio device that audio to transmit (TX) is read from.
+type txDevice interface {
+	Read(p []byte) (int, error)
+	Close()
 }
 
 var audioCfg struct {
@@ -65,7 +78,8 @@ func init() {
 	flag.IntVar(&cfg.PacketBuffer, "packet-buffer", 3, "Buffer n (max 6) packets against reordering and loss")
 	flag.BoolVar(&cfg.HighBandwidth, "high-bw", false, "Use high-bandwidth DAX transport (48kHz float32, 4x bandwidth)")
 	flag.IntVar(&cfg.Gain, "gain", 50, "DAX gain setting (0-100)")
-	flag.StringVar(&cfg.Consume, "consume", "auto", "Consume our own RX stream to work around latency glitches")
+	flag.StringVar(&cfg.Consume, "consume", "auto", "Consume our own RX stream to work around latency glitches (pipe backend only)")
+	flag.StringVar(&cfg.Backend, "backend", "auto", "Audio device backend: native (PipeWire nodes), pipe (module-pipe-source/sink), or auto (native on PipeWire servers when built in)")
 }
 
 var (
@@ -149,7 +163,7 @@ func enableDax(ctx context.Context) error {
 		}
 	}
 
-	fc.SliceSet(SliceIdx, flexclient.Object{"dax": cfg.DaxCh})
+	fc.SliceSet(ctx, SliceIdx, flexclient.Object{"dax": cfg.DaxCh})
 
 	cmd := "dax audio set " + cfg.DaxCh + " slice=" + SliceIdx
 	if cfg.TX {
@@ -252,7 +266,7 @@ func readPacketsUnbuffered(pktIn chan flexclient.VitaPacket, payloadsOut chan []
 	close(payloadsOut)
 }
 
-func streamToPulse(ctx context.Context, source *PulseSource) {
+func streamToPulse(ctx context.Context, source rxDevice) {
 	vitaPackets := make(chan flexclient.VitaPacket, int(cfg.LatencyTarget*48/float64(audioCfg.samplesPerPacket)+100))
 	fc.SetVitaChan(vitaPackets)
 	payloads := make(chan []byte)
@@ -271,11 +285,11 @@ func streamToPulse(ctx context.Context, source *PulseSource) {
 			if !ok {
 				return
 			}
-			_, err := source.Handle.Write(payload)
+			_, err := source.Write(payload)
 			if errors.Is(err, os.ErrClosed) {
 				return
 			} else if err != nil {
-				log.Warn().Err(err).Msg("pipe write")
+				log.Warn().Err(err).Msg("source write")
 			}
 		}
 	}
@@ -290,7 +304,7 @@ func allZero(buf []byte) bool {
 	return true
 }
 
-func streamFromPulse(ctx context.Context, sink *PulseSink, channel int) {
+func streamFromPulse(ctx context.Context, sink txDevice, channel int) {
 	tmp, err := strconv.ParseUint(TXStreamID, 16, 32)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Parse TXStreamID failed")
@@ -320,10 +334,10 @@ func streamFromPulse(ctx context.Context, sink *PulseSink, channel int) {
 		case <-ctx.Done():
 			return
 		default:
-			n, err := sink.Handle.Read(readBuf[:readSize])
+			n, err := sink.Read(readBuf[:readSize])
 			if err != nil {
 				if !errors.Is(err, os.ErrClosed) {
-					log.Error().Err(err).Msg("pipe read")
+					log.Error().Err(err).Msg("sink read")
 				}
 				return
 			}
@@ -413,6 +427,13 @@ func main() {
 		log.Fatal().Msg("-consume must be 'true', 'false', or 'auto'")
 	}
 
+	switch cfg.Backend {
+	case "native", "pipe", "auto":
+		// ok
+	default:
+		log.Fatal().Msg("-backend must be 'native', 'pipe', or 'auto'")
+	}
+
 	fc, err = flexclient.NewFlexClient(cfg.RadioIP)
 	if err != nil {
 		log.Fatal().Err(err).Msg("NewFlexClient failed")
@@ -425,9 +446,23 @@ func main() {
 		log.Fatal().Err(err).Msg("pulse.NewClient failed")
 	}
 
-	wantSelfConsume, err := checkPulseVersion()
+	isPipeWire, err := checkPulseVersion()
 	if err != nil {
 		log.Fatal().Err(err).Send()
+	}
+
+	useNative := false
+	switch cfg.Backend {
+	case "native":
+		if !pipewireNativeSupported {
+			log.Fatal().Msg("-backend=native is not available in this build (requires linux and cgo)")
+		}
+		if !isPipeWire {
+			log.Fatal().Msg("-backend=native requires a PipeWire server")
+		}
+		useNative = true
+	case "auto":
+		useNative = pipewireNativeSupported && isPipeWire
 	}
 
 	err = checkPulseConflicts()
@@ -435,21 +470,36 @@ func main() {
 		log.Fatal().Err(err).Send()
 	}
 
-	source, err := createPipeSource(cfg.Source, fmt.Sprintf("%s slice %s RX", cfg.Station, cfg.Slice), "radio", cfg.LatencyTarget)
-	if err != nil {
-		log.Fatal().Err(err).Msg("Create RX pipe failed")
+	var source rxDevice
+	sourceDesc := fmt.Sprintf("%s slice %s RX", cfg.Station, cfg.Slice)
+
+	if useNative {
+		log.Info().Msg("using native PipeWire nodes")
+		source, err = createNativeSource(cfg.Source, sourceDesc, "radio", cfg.LatencyTarget)
+		if err != nil {
+			log.Fatal().Err(err).Msg("Create RX source failed")
+		}
+		if cfg.Consume == "true" {
+			log.Warn().Msg("-consume does not apply to the native backend, ignoring")
+		}
+	} else {
+		psource, err := createPipeSource(cfg.Source, sourceDesc, "radio", cfg.LatencyTarget)
+		if err != nil {
+			log.Fatal().Err(err).Msg("Create RX pipe failed")
+		}
+		source = psource
+
+		if cfg.Consume == "true" || (cfg.Consume == "auto" && isPipeWire) {
+			consumer, err := psource.Consume()
+			if err != nil {
+				log.Fatal().Err(err).Msg("Create self-consumer failed")
+			}
+			defer consumer.Close()
+		}
 	}
 	defer source.Close()
 
-	if cfg.Consume == "true" || (cfg.Consume == "auto" && wantSelfConsume) {
-		consumer, err := source.Consume()
-		if err != nil {
-			log.Fatal().Err(err).Msg("Create self-consumer failed")
-		}
-		defer consumer.Close()
-	}
-
-	var sink *PulseSink
+	var sink txDevice
 	var txchannel int
 
 	if cfg.TX {
@@ -463,9 +513,14 @@ func main() {
 		default:
 			log.Fatal().Msg("-tx-channel must be left, right, or mono")
 		}
-		sink, err = createPipeSink(cfg.Sink, fmt.Sprintf("%s slice %s TX", cfg.Station, cfg.Slice), "radio", txchannel)
+		sinkDesc := fmt.Sprintf("%s slice %s TX", cfg.Station, cfg.Slice)
+		if useNative {
+			sink, err = createNativeSink(cfg.Sink, sinkDesc, "radio", txchannel)
+		} else {
+			sink, err = createPipeSink(cfg.Sink, sinkDesc, "radio", txchannel)
+		}
 		if err != nil {
-			log.Fatal().Err(err).Msg("Create TX pipe failed")
+			log.Fatal().Err(err).Msg("Create TX sink failed")
 		}
 	}
 

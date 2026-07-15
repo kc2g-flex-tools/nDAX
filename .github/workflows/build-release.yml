@@ -32,9 +32,10 @@ jobs:
         go-version: ${{ matrix.go }}
       id: go
 
-    - name: Install PulseAudio
+    - name: Install PipeWire headers
+      if: matrix.os == 'linux' && matrix.arch == 'amd64'
       run: |
-        sudo apt-get update && sudo apt-get install -y libpulse-dev
+        sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev
 
     - name: Check out code into the Go module directory
       uses: actions/checkout@v2
@@ -52,6 +53,9 @@ jobs:
       env:
         GOOS: ${{ matrix.os }}
         GOARCH: ${{ matrix.arch }}
+        # The native PipeWire backend needs cgo; only the linux/amd64 build
+        # is native. Cross builds are pure Go and use the pipe backend only.
+        CGO_ENABLED: ${{ (matrix.os == 'linux' && matrix.arch == 'amd64') && 1 || 0 }}
 
     - name: Upload to Release
       if: github.event.release.id && matrix.release

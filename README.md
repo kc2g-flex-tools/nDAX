@@ -42,12 +42,22 @@ $ ./nDAX -station station_name -slice A -daxch 1 -source flex.sliceA.rx -sink fl
 ```
 $ ./nDAX -h
 Usage of ./nDAX:
+  -backend string
+        Audio device backend: native (PipeWire nodes), pipe (module-pipe-source/sink), or auto (native on PipeWire servers when built in) (default "auto")
+  -consume string
+        Consume our own RX stream to work around latency glitches (pipe backend only) (default "auto")
   -daxch string
         DAX channel # to use (default "1")
+  -gain int
+        DAX gain setting (0-100) (default 50)
+  -high-bw
+        Use high-bandwidth DAX transport (48kHz float32, 4x bandwidth)
   -latency float
         Target RX latency (ms, higher = less sample rate variation) (default 100)
   -log-level string
         minimum level of messages to log to console (trace, debug, info, warn, error) (default "info")
+  -packet-buffer int
+        Buffer n (max 6) packets against reordering and loss (default 3)
   -radio string
         radio IP address or discovery spec (default ":discover:")
   -rt
@@ -62,7 +72,23 @@ Usage of ./nDAX:
         station name to bind to (default "Flex")
   -tx
         Create a TX audio device (default true)
+  -tx-channel string
+        audio channel to use for tx (mono: create a mono device; left, right: create a stereo device and use one channel) (default "mono")
+  -udp-port int
+        udp port to listen for VITA packets (0: random free port)
 ```
+
+### Backends
+
+On PipeWire systems, nDAX (when built with cgo, as the released linux-amd64
+binaries are) creates its source and sink as native PipeWire nodes via
+libpipewire. The nodes are scheduled by the PipeWire graph like any other
+audio device, which avoids the FIFO buffering and free-running system-clock
+timing of the `module-pipe-source`/`module-pipe-sink` compatibility path.
+On genuine PulseAudio servers, and in pure-Go builds (including the released
+arm/arm64 binaries), nDAX uses the pipe modules as before. `-backend` forces
+one or the other.
+
 ### Multiple Instances
 
 To run multiple nDAX instances, see the scripts directory.

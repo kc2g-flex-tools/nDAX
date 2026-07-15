@@ -151,6 +151,14 @@ func (s *PulseSink) Close() {
 	destroyModule(s.Index)
 }
 
+func (s *PulseSource) Write(p []byte) (int, error) {
+	return s.Handle.Write(p)
+}
+
+func (s *PulseSink) Read(p []byte) (int, error) {
+	return s.Handle.Read(p)
+}
+
 func (s *PulseSource) Consume() (*pulse.RecordStream, error) {
 	writer := pulse.NewWriter(io.Discard, proto.FormatInt16LE)
 	psource, err := pc.SourceByID(s.Name)
