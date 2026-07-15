@@ -68,13 +68,15 @@ func init() {
 	flag.StringVar(&cfg.Consume, "consume", "auto", "Consume our own RX stream to work around latency glitches")
 }
 
-var fc *flexclient.FlexClient
-var pc *pulse.Client
-var ClientID string
-var ClientUUID string
-var SliceIdx string
-var RXStreamID string
-var TXStreamID string
+var (
+	fc         *flexclient.FlexClient
+	pc         *pulse.Client
+	ClientID   string
+	ClientUUID string
+	SliceIdx   string
+	RXStreamID string
+	TXStreamID string
+)
 
 func bindClient(ctx context.Context) error {
 	log.Info().Str("station", cfg.Station).Msg("Waiting for station")
@@ -174,7 +176,7 @@ func enableDax(ctx context.Context) error {
 	}
 
 	if cfg.TX {
-		res, err = fc.SendAndWaitContext(ctx, "stream create type=dax_tx"+cfg.DaxCh)
+		res, err = fc.SendAndWaitContext(ctx, "stream create type=dax_tx dax_channel="+cfg.DaxCh)
 		if err != nil {
 			return err
 		}
@@ -191,7 +193,7 @@ func enableDax(ctx context.Context) error {
 var byteReader bytes.Reader
 
 func readPacketsBuffered(pktIn chan flexclient.VitaPacket, payloadsOut chan []byte) {
-	var readPoint = -1
+	readPoint := -1
 	var buf [16]*flexclient.VitaPacket
 	var ct, reordered, lost int
 	lastPayload := make([]byte, 1024)
@@ -297,7 +299,7 @@ func streamFromPulse(ctx context.Context, sink *PulseSink, channel int) {
 	StreamIDInt := uint32(tmp)
 
 	pktSize := audioCfg.samplesPerPacket * audioCfg.bytesPerSample
-	var readSize = pktSize
+	readSize := pktSize
 	if channel != 0 {
 		readSize *= 2
 	}
@@ -419,7 +421,6 @@ func main() {
 	pc, err = pulse.NewClient(
 		pulse.ClientApplicationName("nDAX"),
 	)
-
 	if err != nil {
 		log.Fatal().Err(err).Msg("pulse.NewClient failed")
 	}

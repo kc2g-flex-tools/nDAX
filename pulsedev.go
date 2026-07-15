@@ -169,7 +169,6 @@ func (s *PulseSource) Consume() (*pulse.RecordStream, error) {
 	return rec, nil
 }
 
-
 func processRunning(pid int) (bool, error) {
 	sigErr := syscall.Kill(pid, syscall.Signal(0))
 	if sigErr == nil {
@@ -250,6 +249,11 @@ func checkPulseConflicts() error {
 				return fmt.Errorf("unloading module %d failed", source.ModuleIndex)
 			}
 		}
+	}
+
+	if !cfg.TX {
+		// If we are not transmitting, we don't need to check for sinks
+		return nil
 	}
 
 	err = pc.RawRequest(
