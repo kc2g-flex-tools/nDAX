@@ -12,7 +12,9 @@ jobs:
 
   build:
     name: Build
-    runs-on: ubuntu-latest
+    # linux/arm64 builds natively on an arm64 runner so it can use cgo for
+    # the native PipeWire backend; everything else cross-compiles from amd64.
+    runs-on: ${{ (matrix.os == 'linux' && matrix.arch == 'arm64') && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     strategy:
       matrix:
         go: ['1.23', '1.24']
@@ -27,18 +29,18 @@ jobs:
     steps:
 
     - name: Set up Go
-      uses: actions/setup-go@v2
+      uses: actions/setup-go@v5
       with:
         go-version: ${{ matrix.go }}
       id: go
 
     - name: Install PipeWire headers
-      if: matrix.os == 'linux' && matrix.arch == 'amd64'
+      if: matrix.os == 'linux' && (matrix.arch == 'amd64' || matrix.arch == 'arm64')
       run: |
         sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev
 
     - name: Check out code into the Go module directory
-      uses: actions/checkout@v2
+      uses: actions/checkout@v4
 
     - name: Get dependencies
       run: |
@@ -53,9 +55,10 @@ jobs:
       env:
         GOOS: ${{ matrix.os }}
         GOARCH: ${{ matrix.arch }}
-        # The native PipeWire backend needs cgo; only the linux/amd64 build
-        # is native. Cross builds are pure Go and use the pipe backend only.
-        CGO_ENABLED: ${{ (matrix.os == 'linux' && matrix.arch == 'amd64') && 1 || 0 }}
+        # The native PipeWire backend needs cgo, so linux/amd64 and
+        # linux/arm64 build natively on matching runners. The remaining
+        # cross builds are pure Go and use the pipe backend only.
+        CGO_ENABLED: ${{ (matrix.os == 'linux' && (matrix.arch == 'amd64' || matrix.arch == 'arm64')) && 1 || 0 }}
 
     - name: Upload to Release
       if: github.event.release.id && matrix.release

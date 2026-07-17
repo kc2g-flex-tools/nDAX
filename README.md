@@ -81,13 +81,13 @@ Usage of ./nDAX:
 ### Backends
 
 On PipeWire systems, nDAX (when built with cgo, as the released linux-amd64
-binaries are) creates its source and sink as native PipeWire nodes via
-libpipewire. The nodes are scheduled by the PipeWire graph like any other
-audio device, which avoids the FIFO buffering and free-running system-clock
-timing of the `module-pipe-source`/`module-pipe-sink` compatibility path.
-On genuine PulseAudio servers, and in pure-Go builds (including the released
-arm/arm64 binaries), nDAX uses the pipe modules as before. `-backend` forces
-one or the other.
+and linux-arm64 binaries are) creates its source and sink as native PipeWire
+nodes via libpipewire. The nodes are scheduled by the PipeWire graph like any
+other audio device, which avoids the FIFO buffering and free-running
+system-clock timing of the `module-pipe-source`/`module-pipe-sink`
+compatibility path. On genuine PulseAudio servers, and in pure-Go builds
+(including the released 32-bit arm binaries), nDAX uses the pipe modules as
+before. `-backend` forces one or the other.
 
 ### Multiple Instances
 
